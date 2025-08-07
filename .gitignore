@@ -1,0 +1,21 @@
+# Node modules
+node_modules/
+
+# Vite build output
+dist/
+
+# Log files
+*.log
+
+# macOS system files
+.DS_Store
+
+# Env files
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# Others (optional)
+*.tsbuildinfo
