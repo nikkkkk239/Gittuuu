@@ -1,31 +1,24 @@
 // src/App.tsx
-import React, { useEffect, useState } from 'react';
-import { auth, provider, signInWithPopup, onAuthStateChanged, signOut } from './lib/firebase';
+import React from 'react';
+import { useAuth } from './context/AuthContext';
+import Login from './pages/Login';
 
 export default function App() {
-  const [user, setUser] = useState<any>(null);
+  const { user, logout ,loading} = useAuth();
 
-  useEffect(() => {
-    onAuthStateChanged(auth, (user) => {
-      setUser(user);
-    });
-  }, []);
+  if(loading) return <div>Loading....</div>
 
-  const login = () => signInWithPopup(auth, provider);
-  const logout = () => signOut(auth);
-
-  if (!user) {
-    return (
-      <div style={{ display: 'flex', height: '100vh', justifyContent: 'center', alignItems: 'center' }}>
-        <button onClick={login}>Login with GitHub</button>
-      </div>
-    );
-  }
+  if (!user) return <Login />;
 
   return (
-    <div>
-      <h1>Welcome, {user.displayName}</h1>
-      <button onClick={logout}>Logout</button>
+    <div className="p-8">
+      <h1 className="text-2xl font-semibold mb-4">Welcome, {user.displayName}</h1>
+      <button
+        onClick={logout}
+        className="bg-red-500 cursor-pointer text-white px-4 py-2 rounded hover:bg-red-600"
+      >
+        Logout
+      </button>
     </div>
   );
 }
