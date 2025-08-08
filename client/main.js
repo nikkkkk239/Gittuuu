@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -19,7 +20,10 @@ function createWindow() {
     `file://${path.join(__dirname, 'dist', 'index.html')}`;
 
   win.loadURL(startURL);
-  win.webContents.openDevTools(); // ✅ Debug console
+  console.log("START URL - ",startURL);
+
 }
 
 app.whenReady().then(createWindow);
+
+
