@@ -1,4 +1,8 @@
-// Preload script (optional for secure IPC)
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('Preload loaded');
+
+const {contextBridge , ipcRenderer} = require("electron")
+
+contextBridge.exposeInMainWorld("electronAPI", {
+  openFolder: () => ipcRenderer.invoke("dialog:openFolder"),
+  openFile: () => ipcRenderer.invoke("dialog:openFile"),
+  cloneRepo: (url) => ipcRenderer.invoke("git:clone", url),
 });

@@ -21,7 +21,7 @@ export default function Login() {
     chromaticAberration={0}
     dither={0}
     curvature={0}
-    tint="#ffffff"
+    tint="#0F4D0F"
     mouseReact={true}
     mouseStrength={0.5}
     pageLoadAnimation={false}
