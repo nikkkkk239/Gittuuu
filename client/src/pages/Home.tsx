@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useFolder } from "../context/FolderContext";
+import { useAuth } from "../context/AuthContext";
 
 interface FileItem {
   name: string;
@@ -19,6 +20,7 @@ const HomePage: React.FC = () => {
   const [fileTree, setFileTree] = useState<FileItem[]>([]);
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
+  const {logout} = useAuth();
 
   const readDirectoryRecursive = async (path: string): Promise<FileItem[]> => {
     const items = await window.electronAPI.readDirectory(path);
@@ -42,6 +44,11 @@ const HomePage: React.FC = () => {
       readDirectoryRecursive(folderPath).then(setFileTree);
     }
   }, [folderPath]);
+  const handleClick = async()=>{
+    logout();
+    await window.electronAPI.signUserOut();
+  }
+
 
   const handleFileClick = async (file: FileItem) => {
     const content = await window.electronAPI.readFile(file.path);
@@ -85,6 +92,7 @@ const HomePage: React.FC = () => {
   return (
     <div className="flex h-screen bg-gray-900 text-white">
       {/* Sidebar */}
+      <div onClick={handleClick}>Logout</div>
       <div className="w-64 overflow-auto border-r border-gray-700 p-2">
         {fileTree.length > 0 ? (
           <FileTree items={fileTree} />

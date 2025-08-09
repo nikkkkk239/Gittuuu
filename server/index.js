@@ -3,7 +3,7 @@ import express from "express"
 const app = express();
 
 app.get("/git/callback",(req,res)=>{
-    res.end("Auth")
+    res.end("hi")
 })
 
 app.listen(3000,(req,res)=>{
