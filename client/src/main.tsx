@@ -3,12 +3,18 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { AuthProvider } from './context/AuthContext';
 import './index.css'; 
-
+import { Toaster } from 'react-hot-toast';
+import { BrowserRouter } from 'react-router-dom';
+import { FolderProvider } from "./context/FolderContext";
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <AuthProvider>
-      <App />
+      <FolderProvider>
+        <BrowserRouter>
+          <App />
+          <Toaster/>
+        </BrowserRouter>
+      </FolderProvider>
     </AuthProvider>
-    
   </React.StrictMode>
 );

@@ -1,9 +1,9 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow ,ipcMain, dialog,session ,Menu} from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { ipcMain, dialog } from "electron";
 import simpleGit from "simple-git";
-
+import fs from "fs";
+import pathModule from "path";
 
 ipcMain.handle("dialog:openFolder", async () => {
   console.log("Opening folder dialog...");
@@ -25,6 +25,24 @@ ipcMain.handle("git:clone", async (_, repoUrl) => {
     return "Cloned successfully";
   }
 });
+ipcMain.handle("logout",async()=>{
+  await session.defaultSession.clearStorageData({
+    storages: ["cookies", "localstorage", "cachestorage"]
+  });
+})
+
+ipcMain.handle("fs:readDirectory", async (_, dirPath) => {
+  const items = fs.readdirSync(dirPath, { withFileTypes: true });
+  return items.map(item => ({
+    name: item.name,
+    path: pathModule.join(dirPath, item.name),
+    isDirectory: item.isDirectory()
+  }));
+});
+
+ipcMain.handle("fs:readFile", async (_, filePath) => {
+  return fs.readFileSync(filePath, "utf-8");
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +62,68 @@ function createWindow() {
 
   win.loadURL(startURL);
   console.log("START URL - ",startURL);
+  const menuTemplate = [
+  {
+    label: "File",
+    submenu: [
+      {
+        label: "Open Folder",
+        click: async () => {
+          const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+            properties: ["openDirectory"],
+          });
+          if (!canceled && filePaths.length > 0) {
+            win.webContents.send("folder-selected", filePaths[0]);
+          }
+        },
+      },
+      {
+        label: "Open File",
+        click: async () => {
+          const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+            properties: ["openFile"],
+          });
+          if (!canceled && filePaths.length > 0) {
+            win.webContents.send("file-selected", filePaths[0]);
+          }
+        },
+      },
+      { type: "separator" },
+      { role: "quit" },
+    ],
+  },
+  {
+    label: "Edit",
+    submenu: [
+      { role: "undo" },
+      { role: "redo" },
+      { type: "separator" },
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+    ],
+  },
+  {
+    label: "View",
+    submenu: [
+      { role: "reload" },
+      { role: "forceReload" },
+      { role: "toggleDevTools" }, // <- This adds the Developer Tools toggle
+      { type: "separator" },
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      { role: "zoomOut" },
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ],
+  },
+];
+
+
+  const menu = Menu.buildFromTemplate(menuTemplate);
+  Menu.setApplicationMenu(menu);
+
+
 
 }
 
