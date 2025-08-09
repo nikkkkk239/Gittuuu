@@ -17,11 +17,12 @@ export default function LandingPage({ onOpenFolder , onOpenFile, onCloneRepo } :
 
   return (
     <div className="bg-black text-white h-screen flex flex-col items-center ">
-        <div className="mt-10 w-full px-20 py-5">
+        <div className="mt-10 w-full md:px-20 px-10 py-5">
             <h1 className="text-4xl font-extrabold museoModerno">DevDock</h1>
             <p>Hi, {user?.displayName} !</p>
         </div>
-      <div className="max-w-md w-full text-center mt-[10%] space-y-8">
+        <div className="w-full flex items-center justify-center h-full max-h-[70vh]">
+      <div className="max-w-md w-full text-center   space-y-8">
         <h1 className="text-3xl font-bold">Welcome to Your IDE</h1>
         <p className="text-gray-400">Select a folder, file, or clone a repository to get started</p>
 
@@ -65,6 +66,7 @@ export default function LandingPage({ onOpenFolder , onOpenFile, onCloneRepo } :
             </button>
           </div>
         )}
+      </div>
       </div>
     </div>
   );
