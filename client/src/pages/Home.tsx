@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useFolder } from "../context/FolderContext";
 import { useAuth } from "../context/AuthContext";
+import { ChevronDown, ChevronRight, FilePlus, FilePlus2, FolderPlus } from "lucide-react";
 
 interface FileItem {
   name: string;
@@ -16,11 +17,12 @@ interface Tab {
 }
 
 const HomePage: React.FC = () => {
-  const { folderPath } = useFolder(); // ✅ Get from context
+  const { folderPath } = useFolder();
   const [fileTree, setFileTree] = useState<FileItem[]>([]);
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
-  const {logout} = useAuth();
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set()); 
+  const { logout } = useAuth();
 
   const readDirectoryRecursive = async (path: string): Promise<FileItem[]> => {
     const items = await window.electronAPI.readDirectory(path);
@@ -44,15 +46,9 @@ const HomePage: React.FC = () => {
       readDirectoryRecursive(folderPath).then(setFileTree);
     }
   }, [folderPath]);
-  const handleClick = async()=>{
-    logout();
-    await window.electronAPI.signUserOut();
-  }
-
 
   const handleFileClick = async (file: FileItem) => {
     const content = await window.electronAPI.readFile(file.path);
-
     if (!openTabs.find((tab) => tab.path === file.path)) {
       setOpenTabs((prev) => [...prev, { ...file, content }]);
     }
@@ -67,18 +63,40 @@ const HomePage: React.FC = () => {
     }
   };
 
+  const toggleFolder = (path: string) => {
+    setExpandedFolders((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(path)) {
+        newSet.delete(path);
+      } else {
+        newSet.add(path);
+      }
+      return newSet;
+    });
+  };
+
   const FileTree: React.FC<{ items: FileItem[] }> = ({ items }) => (
-    <ul className="pl-4">
+    <ul className="pl-2">
       {items.map((item) => (
         <li key={item.path}>
           {item.isDirectory ? (
             <>
-              <div className="font-bold">📁 {item.name}</div>
-              <FileTree items={item.children || []} />
+              <div
+                className="flex items-center font-bold cursor-pointer hover:bg-white/20 px-1"
+                onClick={() => toggleFolder(item.path)}
+              >
+                <span className="mr-1">
+                  {expandedFolders.has(item.path) ? <ChevronDown/> : <ChevronRight/>}
+                </span>
+                📁 {item.name}
+              </div>
+              {expandedFolders.has(item.path) && (
+                <FileTree items={item.children || []} />
+              )}
             </>
           ) : (
             <div
-              className="cursor-pointer hover:bg-gray-700 px-1"
+              className="cursor-pointer hover:bg-white/20 px-1"
               onClick={() => handleFileClick(item)}
             >
               📄 {item.name}
@@ -90,44 +108,60 @@ const HomePage: React.FC = () => {
   );
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white">
+    <div className="flex h-screen bg-black text-white">
       {/* Sidebar */}
-      <div onClick={handleClick}>Logout</div>
       <div className="w-64 overflow-auto border-r border-gray-700 p-2">
-        {fileTree.length > 0 ? (
-          <FileTree items={fileTree} />
-        ) : (
-          
-<div className="w-full bg-gray-200 rounded-full h-1 dark:bg-gray-700">
-  <div className="bg-white h-1 rounded-full w-[45%]" ></div>
-</div>
+        {folderPath ? (
+          <>
+            {/* Root folder name */}
+            <div className="flex items-center justify-between group cursor-pointer" onClick={() => toggleFolder(folderPath)}>
+              <div
+                className="flex items-center font-medium text-lg cursor-pointer p-1"
+                
+              >
+                <span className="mr-1">
+                  {expandedFolders.has(folderPath) ? <ChevronDown/> : <ChevronRight/>}
+                </span>
+                📂 {folderPath.split(/[/\\]/).pop()}
+              </div>
+              <div className="hidden group-hover:flex gap-1 mr-2">
+                <div title="New File" className="p-1 hover:bg-white/20  cursor-pointer rounded"><FilePlus strokeWidth={1.2} size={19} className="cursor-pointer"/></div>
+                <div title="New File" className="p-1 hover:bg-white/20  cursor-pointer rounded"><FolderPlus strokeWidth={1.2} size={19} className="cursor-pointer"/></div>
+              </div>
+            </div>
 
+            {expandedFolders.has(folderPath) && (
+              <FileTree items={fileTree} />
+            )}
+          </>
+        ) : (
+          <p>No folder selected</p>
         )}
       </div>
 
       {/* Main content */}
       <div className="flex-1 flex flex-col">
         {/* Tabs */}
-        <div className="flex border-b border-gray-700 bg-gray-800">
+        <div className="flex max-w-[1180px] overflow-x-scroll border-b border-gray-700 bg-white/20">
           {openTabs.map((tab) => (
             <div
               key={tab.path}
-              className={`flex items-center px-3 py-1 cursor-pointer ${
+              className={`flex items-center px-3 py-1 border-white/10 border-[1px] cursor-pointer ${
                 activeTab === tab.path
-                  ? "bg-gray-700 text-white"
-                  : "bg-gray-800 text-gray-400"
+                  ? "bg-white/10 text-white"
+                  : "bg-white/10 text-white/30"
               }`}
               onClick={() => setActiveTab(tab.path)}
             >
-              <p className="max-w-[100px] overflow-x-scroll">{tab.name}</p>
+              <p className="">{tab.name}</p>
               <span
                 onClick={(e) => {
                   e.stopPropagation();
                   closeTab(tab.path);
                 }}
-                className="ml-2 text-red-400 hover:text-red-600"
+                className="ml-2 cursor-pointer"
               >
-                ❌
+                x
               </span>
             </div>
           ))}
