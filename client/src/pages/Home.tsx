@@ -1,7 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { useFolder } from "../context/FolderContext";
 import { useAuth } from "../context/AuthContext";
-import { ChevronDown, ChevronRight, FilePlus, FilePlus2, FolderPlus } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  FilePlus,
+  FolderPlus,
+  LogOut,
+  LogOutIcon,
+  Settings,
+} from "lucide-react";
 
 interface FileItem {
   name: string;
@@ -17,16 +27,20 @@ interface Tab {
 }
 
 const HomePage: React.FC = () => {
-  const { folderPath } = useFolder();
+  const { folderPath, filePath, setFolderPath, setFilePath } = useFolder();
   const [fileTree, setFileTree] = useState<FileItem[]>([]);
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set()); 
+  const [openingFile, setOpeningFile] = useState<boolean>(false);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const { logout } = useAuth();
+  const [isSideBarOpen , setIsSideBarOpen] = useState(false);
 
   const readDirectoryRecursive = async (path: string): Promise<FileItem[]> => {
     const items = await window.electronAPI.readDirectory(path);
     const results: FileItem[] = [];
+
+
 
     for (const item of items) {
       if (item.isDirectory) {
@@ -41,18 +55,36 @@ const HomePage: React.FC = () => {
     return results;
   };
 
+  // Load folder tree OR single file
   useEffect(() => {
+    setActiveTab(null);
+    setOpenTabs([]);
     if (folderPath) {
       readDirectoryRecursive(folderPath).then(setFileTree);
+    } else if (filePath) {
+      // directly open the single file as a tab
+      (async () => {
+        const content = await window.electronAPI.readFile(filePath);
+        setOpenTabs([
+          {
+            name: filePath.split(/[/\\]/).pop() || "Untitled",
+            path: filePath,
+            content,
+          },
+        ]);
+        setActiveTab(filePath);
+      })();
     }
-  }, [folderPath]);
+  }, [folderPath, filePath]);
 
   const handleFileClick = async (file: FileItem) => {
+    setOpeningFile(true);
     const content = await window.electronAPI.readFile(file.path);
     if (!openTabs.find((tab) => tab.path === file.path)) {
       setOpenTabs((prev) => [...prev, { ...file, content }]);
     }
     setActiveTab(file.path);
+    setOpeningFile(false);
   };
 
   const closeTab = (path: string) => {
@@ -61,6 +93,14 @@ const HomePage: React.FC = () => {
       const remaining = openTabs.filter((tab) => tab.path !== path);
       setActiveTab(remaining.length > 0 ? remaining[0].path : null);
     }
+  };
+
+  const handleLogout = async () => {
+    logout();
+    await window.electronAPI.signUserOut();
+    localStorage.clear();
+    setFolderPath(null);
+    setFilePath(null);
   };
 
   const toggleFolder = (path: string) => {
@@ -76,7 +116,7 @@ const HomePage: React.FC = () => {
   };
 
   const FileTree: React.FC<{ items: FileItem[] }> = ({ items }) => (
-    <ul className="pl-2">
+    <ul className="pl-2 overflow-y-scroll max-h-[87vh]">
       {items.map((item) => (
         <li key={item.path}>
           {item.isDirectory ? (
@@ -86,7 +126,7 @@ const HomePage: React.FC = () => {
                 onClick={() => toggleFolder(item.path)}
               >
                 <span className="mr-1">
-                  {expandedFolders.has(item.path) ? <ChevronDown/> : <ChevronRight/>}
+                  {expandedFolders.has(item.path) ? <ChevronDown /> : <ChevronRight />}
                 </span>
                 📁 {item.name}
               </div>
@@ -108,58 +148,82 @@ const HomePage: React.FC = () => {
   );
 
   return (
-    <div className="flex h-screen bg-black text-white">
+    <div className="flex w-full h-screen bg-black text-white">
       {/* Sidebar */}
-      <div className="w-64 overflow-auto border-r border-gray-700 p-2">
-        {folderPath ? (
-          <>
-            {/* Root folder name */}
-            <div className="flex items-center justify-between group cursor-pointer" onClick={() => toggleFolder(folderPath)}>
+      <div className={`${isSideBarOpen ? "w-[18%]":"w-[3%]" } transition-all duration-150 overflow-auto flex justify-between gap-3 flex-col border-r border-gray-700 p-2`}>
+          <div>
+          <div  title={isSideBarOpen ? "Close" : "Open"} className="w-full flex  justify-end">{isSideBarOpen ?  <ChevronsLeft onClick={()=>setIsSideBarOpen(!isSideBarOpen)} className="cursor-pointer"/>:<ChevronsRight className="cursor-pointer" onClick={()=>setIsSideBarOpen(!isSideBarOpen)}/>}</div>
+          {!isSideBarOpen ?<div></div> : folderPath? (
+            <>
+              {/* Root folder name */}
               <div
-                className="flex items-center font-medium text-lg cursor-pointer p-1"
-                
+                className="flex items-center justify-between group cursor-pointer"
+                onClick={() => toggleFolder(folderPath)}
               >
-                <span className="mr-1">
-                  {expandedFolders.has(folderPath) ? <ChevronDown/> : <ChevronRight/>}
-                </span>
-                📂 {folderPath.split(/[/\\]/).pop()}
+                <div className="flex items-center font-medium text-lg cursor-pointer p-1">
+                  <span className="mr-1">
+                    {expandedFolders.has(folderPath) ? <ChevronDown /> : <ChevronRight />}
+                  </span>
+                  <p>📂 {folderPath.split(/[/\\]/).pop()?.substring(0 , 10)}</p>
+                </div>
+                <div className="hidden group-hover:flex gap-1 mr-2">
+                  <div
+                    title="New File"
+                    className="p-1 hover:bg-white/20 cursor-pointer rounded"
+                  >
+                    <FilePlus strokeWidth={1.2} size={19} />
+                  </div>
+                  <div
+                    title="New Folder"
+                    className="p-1 hover:bg-white/20 cursor-pointer rounded"
+                  >
+                    <FolderPlus strokeWidth={1.2} size={19} />
+                  </div>
+                </div>
               </div>
-              <div className="hidden group-hover:flex gap-1 mr-2">
-                <div title="New File" className="p-1 hover:bg-white/20  cursor-pointer rounded"><FilePlus strokeWidth={1.2} size={19} className="cursor-pointer"/></div>
-                <div title="New File" className="p-1 hover:bg-white/20  cursor-pointer rounded"><FolderPlus strokeWidth={1.2} size={19} className="cursor-pointer"/></div>
-              </div>
-            </div>
 
-            {expandedFolders.has(folderPath) && (
-              <FileTree items={fileTree} />
-            )}
-          </>
-        ) : (
-          <p>No folder selected</p>
-        )}
+              {expandedFolders.has(folderPath) && <FileTree items={fileTree} />}
+            </>
+          ) : filePath ? (
+            <div className="font-medium text-white/20 text-xl p-1">
+              {/* 📄 {filePath.split(/[/\\]/).pop()} */}
+              Open a Folder To view Explorer
+            </div>
+          ) :  (
+            <p>No folder or file selected</p>
+          )}
+        </div>
+        <button
+          onClick={handleLogout} title="Logout"
+          className={` transition-all duration-150  py-2 ${isSideBarOpen && "bg-white/10 hover:bg-white/20"} rounded-4xl cursor-pointer`}
+        >
+          {isSideBarOpen ? "Logout":<LogOutIcon size={16} className="m-auto"/> }
+        </button>
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col">
+      <div className={`flex-1 ${isSideBarOpen ? "w-[82%]" : "w-[97%]"}  flex flex-col`}>
         {/* Tabs */}
-        <div className="flex max-w-[1180px] overflow-x-scroll border-b border-gray-700 bg-white/20">
+        <div className={`flex w-full overflow-x-scroll  border-b border-gray-700 bg-white/20`}>
           {openTabs.map((tab) => (
             <div
               key={tab.path}
-              className={`flex items-center px-3 py-1 border-white/10 border-[1px] cursor-pointer ${
+              className={`flex group items-center px-3 py-1 border-white/10 border-[1px] cursor-pointer ${
                 activeTab === tab.path
                   ? "bg-white/10 text-white"
                   : "bg-white/10 text-white/30"
               }`}
               onClick={() => setActiveTab(tab.path)}
             >
-              <p className="">{tab.name}</p>
+              <p className="whitespace-nowrap">{tab.name}</p>
               <span
                 onClick={(e) => {
                   e.stopPropagation();
                   closeTab(tab.path);
                 }}
-                className="ml-2 cursor-pointer"
+                className={`ml-2 ${
+                  activeTab == tab.path ? "opacity-100" : "opacity-0"
+                } group-hover:opacity-100 cursor-pointer`}
               >
                 x
               </span>
@@ -168,7 +232,7 @@ const HomePage: React.FC = () => {
         </div>
 
         {/* Editor Area */}
-        <div className="flex-1 p-4 overflow-x-scroll max-w-[1180px] bg-black">
+        <div className="flex-1 p-4 overflow-x-scroll w-full bg-black">
           {activeTab ? (
             <pre className="whitespace-pre-wrap">
               {openTabs.find((tab) => tab.path === activeTab)?.content}

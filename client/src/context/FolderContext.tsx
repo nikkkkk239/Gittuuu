@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 
 interface FolderContextType {
   folderPath: string | null;
+  filePath: string | null;
+  setFilePath: (path: string | null) => void;
   setFolderPath: (path: string | null) => void;
 }
 
@@ -9,11 +11,16 @@ const FolderContext = createContext<FolderContextType | undefined>(undefined);
 
 export const FolderProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [folderPath, setFolderPathState] = useState<string | null>(null);
+  const [filePath, setFilePathState] = useState<string | null>(null);
 
   useEffect(() => {
-    const savedPath = localStorage.getItem("selectedFolder");
-    if (savedPath) {
-      setFolderPathState(savedPath);
+    const savedFolderPath = localStorage.getItem("selectedFolder");
+    const savedFilePath = localStorage.getItem("selectedFile");
+    if (savedFolderPath) {
+      setFolderPathState(savedFolderPath);
+    }
+    if(savedFilePath){
+      setFilePathState(savedFilePath);
     }
   }, []);
 
@@ -25,9 +32,17 @@ export const FolderProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       localStorage.removeItem("selectedFolder");
     }
   };
+  const setFilePath = (path: string | null) => {
+    setFilePathState(path);
+    if (path) {
+      localStorage.setItem("selectedFile", path);
+    } else {
+      localStorage.removeItem("selectedFile");
+    }
+  };
 
   return (
-    <FolderContext.Provider value={{ folderPath, setFolderPath }}>
+    <FolderContext.Provider value={{ folderPath, setFolderPath ,filePath , setFilePath}}>
       {children}
     </FolderContext.Provider>
   );

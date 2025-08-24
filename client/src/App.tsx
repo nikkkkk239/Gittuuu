@@ -10,7 +10,7 @@ import Home from "./pages/Home";
 
 export default function App() {
   const { user, loading } = useAuth();
-  const { setFolderPath ,folderPath } = useFolder();
+  const { setFolderPath, setFilePath, folderPath, filePath } = useFolder();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -19,6 +19,7 @@ export default function App() {
       console.log("Selected from menu:", folderPath);
       if (folderPath) {
         setFolderPath(folderPath);
+        setFilePath(null);
         navigate("/home");
       }
     });
@@ -27,11 +28,12 @@ export default function App() {
     window.electronAPI?.onFileSelected?.((filePath) => {
       console.log("Selected file from menu:", filePath);
       if (filePath) {
-        setFolderPath(filePath); // optional: handle files differently if needed
+        setFilePath(filePath); // optional: handle files differently if needed
+        setFolderPath(null);
         navigate("/home");
       }
     });
-  }, [setFolderPath, navigate]);
+  }, [setFolderPath,setFilePath, navigate]);
 
   if (loading) {
     return <div className="w-[100vw] flex justify-center items-center min-h-screen bg-black">
@@ -50,6 +52,7 @@ export default function App() {
     const folder = await window.electronAPI.openFolder();
     if (folder) {
       setFolderPath(folder);
+      setFilePath(null);
       navigate("/home");
     }
   };
@@ -57,7 +60,8 @@ export default function App() {
   const handleOpenFile = async () => {
     const file = await window.electronAPI.openFile();
     if (file) {
-      setFolderPath(file); // optional: handle as a file path
+      setFilePath(file); // optional: handle as a file path
+      setFolderPath(null);
       navigate("/home");
     }
   };
@@ -71,6 +75,7 @@ export default function App() {
       const folder = await window.electronAPI.cloneRepo(repoUrl);
       if (folder) {
         setFolderPath(folder);
+        setFilePath(null);
         navigate("/home");
       }
     } catch (error: any) {
@@ -83,12 +88,12 @@ export default function App() {
     <Routes>
       <Route
         path="/login"
-        element={!user ? <Login /> : folderPath ?  <Navigate to="/home"/> : <Navigate to="/" />}
+        element={!user ? <Login /> : folderPath || filePath ?  <Navigate to="/home"/> : <Navigate to="/" />}
       />
       <Route
         path="/"
         element={
-          user ? folderPath ? <Navigate to={"/home"}/> : (
+          user ? folderPath || filePath ? <Navigate to={"/home"}/> : (
             <LandingPage
               onOpenFolder={handleOpenFolder}
               onOpenFile={handleOpenFile}
@@ -101,7 +106,7 @@ export default function App() {
       />
       <Route
         path="/home"
-        element={user ? folderPath ? <Home/> : <Navigate to={"/"}/> : <Navigate to="/login" />}
+        element={user ? folderPath || filePath ? <Home/> : <Navigate to={"/"}/> : <Navigate to="/login" />}
       />
     </Routes>
   );
