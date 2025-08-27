@@ -31,13 +31,47 @@ ipcMain.handle("logout",async()=>{
   });
 })
 
+ipcMain.handle("fs:delete", async (_, targetPath) => {
+  if (fs.existsSync(targetPath)) {
+    const stat = fs.lstatSync(targetPath);
+    if (stat.isDirectory()) {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(targetPath);
+    }
+  }
+  return true;
+});
+
+ipcMain.handle("fs:rename", async (_, oldPath, newPath) => {
+  fs.renameSync(oldPath, newPath);
+  return true;
+});
+
+
+ipcMain.handle("fs:saveFile", async (_, filePath, content) => {
+  fs.writeFileSync(filePath, content, "utf-8");
+  return true;
+});
+
 ipcMain.handle("fs:readDirectory", async (_, dirPath) => {
   const items = fs.readdirSync(dirPath, { withFileTypes: true });
-  return items.map(item => ({
+
+  return items.filter(item => !item.name.startsWith(".")).map(item => ({
     name: item.name,
     path: pathModule.join(dirPath, item.name),
     isDirectory: item.isDirectory()
   }));
+});
+
+ipcMain.handle("add-file", async (_, filePath, content) => {
+  fs.writeFileSync(filePath, content || "");
+  return true;
+});
+
+ipcMain.handle("add-folder", async (_,folderPath) => {
+  fs.mkdirSync(folderPath, { recursive: true });
+  return true;
 });
 
 ipcMain.handle("fs:readFile", async (_, filePath) => {

@@ -32,9 +32,15 @@ const HomePage: React.FC = () => {
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [openingFile, setOpeningFile] = useState<boolean>(false);
+  const [activeFolder, setActiveFolder] = useState<string | null>(folderPath);
+
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const { logout } = useAuth();
-  const [isSideBarOpen , setIsSideBarOpen] = useState(false);
+  const [isSideBarOpen , setIsSideBarOpen] = useState(true);
+
+  const [showInput, setShowInput] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [isFolder, setIsFolder] = useState(false);
 
   const readDirectoryRecursive = async (path: string): Promise<FileItem[]> => {
     const items = await window.electronAPI.readDirectory(path);
@@ -115,42 +121,108 @@ const HomePage: React.FC = () => {
     });
   };
 
+  
+
+   const handleAddFile = () => {
+    if (!activeFolder) return;
+    setIsFolder(false);
+    setNewName("");
+    setShowInput(true);
+  };
+
+  // Trigger new folder creation (show input box)
+  const handleAddFolder = () => {
+    if (!activeFolder) return;
+    setIsFolder(true);
+    setNewName("");
+    setShowInput(true);
+  };
+
+  // When user presses Enter in the input field
+  const handleCreate = async () => {
+    if (!newName.trim() || !activeFolder) {
+      setShowInput(false);
+      return;
+    }
+
+    try {
+      if (isFolder) {
+        await window.electronAPI.addFolder(`${activeFolder}/${newName}`);
+      } else {
+        await window.electronAPI.addFile(`${activeFolder}/${newName}`, "");
+      }
+      const updatedTree = await readDirectoryRecursive(folderPath!);
+      setFileTree(updatedTree);
+    } catch (error) {
+      console.error("Error creating item:", error);
+    }
+
+    setShowInput(false);
+    setNewName("");
+  };
+
   const FileTree: React.FC<{ items: FileItem[] }> = ({ items }) => (
-    <ul className="pl-2 overflow-y-scroll max-h-[87vh]">
-      {items.map((item) => (
-        <li key={item.path}>
-          {item.isDirectory ? (
-            <>
-              <div
-                className="flex items-center font-bold cursor-pointer hover:bg-white/20 px-1"
-                onClick={() => toggleFolder(item.path)}
-              >
+  <ul className="pl-2 overflow-y-scroll max-h-[87vh]">
+    {items.map((item) => (
+      <li key={item.path}>
+        {item.isDirectory ? (
+          <>
+            <div
+              className="flex items-center justify-between group font-bold cursor-pointer hover:bg-white/20 px-1"
+              onClick={() => {
+                toggleFolder(item.path);
+                setActiveFolder(item.path); // mark this as current target
+              }}
+            >
+              <div className="flex items-center">
                 <span className="mr-1">
                   {expandedFolders.has(item.path) ? <ChevronDown /> : <ChevronRight />}
                 </span>
                 📁 {item.name}
               </div>
-              {expandedFolders.has(item.path) && (
-                <FileTree items={item.children || []} />
-              )}
-            </>
-          ) : (
-            <div
-              className="cursor-pointer hover:bg-white/20 px-1"
-              onClick={() => handleFileClick(item)}
-            >
-              📄 {item.name}
             </div>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
+            {showInput && activeFolder == item.path && (
+              <div className="p-1">
+                <input
+                  type="text"
+                  value={newName}
+                  onBlur={()=>{
+                    setShowInput(false);
+                  }}
+                  onChange={(e) => setNewName(e.target.value)}
+                 onKeyDown={(e) => {
+                      if (e.key === "Enter") handleCreate();
+                      if (e.key === "Escape") setShowInput(false);
+                  }}
+                  placeholder={isFolder ? "New Folder Name" : "New File Name"}
+                  className="w-full bg-gray-800 text-white px-2 py-1 rounded"
+                  autoFocus
+                />
+              </div>
+            )}
+
+            {expandedFolders.has(item.path) && (
+              <FileTree items={item.children || []} />
+            )}
+          </>
+        ) : (
+          <div
+            className="cursor-pointer hover:bg-white/20 px-1"
+            onClick={() => handleFileClick(item)}
+          >
+            📄 {item.name}
+          </div>
+        )}
+      </li>
+    ))}
+  </ul>
+);
+
 
   return (
     <div className="flex w-full h-screen bg-black text-white">
       {/* Sidebar */}
-      <div className={`${isSideBarOpen ? "w-[18%]":"w-[3%]" } transition-all duration-150 overflow-auto flex justify-between gap-3 flex-col border-r border-gray-700 p-2`}>
+      <div className={`${isSideBarOpen ? "w-[18%]":"w-[3%]" } scrollbar-thin transition-all duration-150 overflow-auto flex justify-between gap-3 flex-col border-r border-gray-700 p-2`}>
           <div>
           <div  title={isSideBarOpen ? "Close" : "Open"} className="w-full flex  justify-end">{isSideBarOpen ?  <ChevronsLeft onClick={()=>setIsSideBarOpen(!isSideBarOpen)} className="cursor-pointer"/>:<ChevronsRight className="cursor-pointer" onClick={()=>setIsSideBarOpen(!isSideBarOpen)}/>}</div>
           {!isSideBarOpen ?<div></div> : folderPath? (
@@ -158,7 +230,10 @@ const HomePage: React.FC = () => {
               {/* Root folder name */}
               <div
                 className="flex items-center justify-between group cursor-pointer"
-                onClick={() => toggleFolder(folderPath)}
+                onClick={() => {
+                  toggleFolder(folderPath);
+                  setActiveFolder(folderPath); // mark this as current target
+                }}
               >
                 <div className="flex items-center font-medium text-lg cursor-pointer p-1">
                   <span className="mr-1">
@@ -169,18 +244,44 @@ const HomePage: React.FC = () => {
                 <div className="hidden group-hover:flex gap-1 mr-2">
                   <div
                     title="New File"
-                    className="p-1 hover:bg-white/20 cursor-pointer rounded"
+                    className="p-1 hover:bg-white/20 cursor-pointer rounded" onClick={(e) => {
+                      e.stopPropagation();
+                      handleAddFile();
+                      
+                    }}  
                   >
                     <FilePlus strokeWidth={1.2} size={19} />
                   </div>
                   <div
                     title="New Folder"
-                    className="p-1 hover:bg-white/20 cursor-pointer rounded"
+                    className="p-1 hover:bg-white/20 cursor-pointer rounded" onClick={(e) => {
+                    e.stopPropagation();
+                    handleAddFolder();
+                  }}
                   >
                     <FolderPlus strokeWidth={1.2} size={19} />
                   </div>
                 </div>
               </div>
+              {showInput && activeFolder == folderPath && (
+              <div className="p-1">
+                <input
+                  type="text"
+                  value={newName}
+                  onBlur={()=>{
+                    setShowInput(false);
+                  }}
+                  onChange={(e) => setNewName(e.target.value)}
+                 onKeyDown={(e) => {
+                      if (e.key === "Enter") handleCreate();
+                      if (e.key === "Escape") setShowInput(false);
+                  }}
+                  placeholder={isFolder ? "New Folder Name" : "New File Name"}
+                  className="w-full bg-gray-800 text-white px-2 py-1 rounded"
+                  autoFocus
+                />
+              </div>
+            )}
 
               {expandedFolders.has(folderPath) && <FileTree items={fileTree} />}
             </>
@@ -204,13 +305,13 @@ const HomePage: React.FC = () => {
       {/* Main content */}
       <div className={`flex-1 ${isSideBarOpen ? "w-[82%]" : "w-[97%]"}  flex flex-col`}>
         {/* Tabs */}
-        <div className={`flex w-full overflow-x-scroll  border-b border-gray-700 bg-white/20`}>
+        <div className={`flex w-full scrollbar-thin overflow-x-scroll  border-b border-gray-700 bg-white/20`}>
           {openTabs.map((tab) => (
             <div
               key={tab.path}
               className={`flex group items-center px-3 py-1 border-white/10 border-[1px] cursor-pointer ${
                 activeTab === tab.path
-                  ? "bg-white/10 text-white"
+                  ? "bg-white/10 text-white border-b-0 border-t-2 border-t-blue-500"
                   : "bg-white/10 text-white/30"
               }`}
               onClick={() => setActiveTab(tab.path)}
@@ -232,9 +333,9 @@ const HomePage: React.FC = () => {
         </div>
 
         {/* Editor Area */}
-        <div className="flex-1 p-4 overflow-x-scroll w-full bg-black">
+        <div className="flex-1 p-4 overflow-x-scroll scrollbar-thin w-full bg-black">
           {activeTab ? (
-            <pre className="whitespace-pre-wrap">
+            <pre className="whitespace-pre-wrap scrollbar-thin">
               {openTabs.find((tab) => tab.path === activeTab)?.content}
             </pre>
           ) : (

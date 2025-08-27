@@ -27,6 +27,7 @@
     "@types/react-dom": "^19.1.7",
     "dotenv": "^17.2.1",
     "firebase": "^12.1.0",
+    "fs": "^0.0.1-security",
     "lucide-react": "^0.539.0",
     "monaco-editor": "^0.52.2",
     "ogl": "^1.0.11",

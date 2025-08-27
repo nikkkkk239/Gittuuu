@@ -14,6 +14,8 @@ declare global {
       readFile: (filePath: string) => Promise<string>;
       onFolderSelected: (callback: (folderPath: string) => void) => void;
       onFileSelected: (callback: (filePath: string) => void) => void;
+      addFile : (newFilePath : string , content: string)=>Promise<boolean>;
+      addFolder : (newFolderPath : string)=>Promise<boolean>;
     };
   }
 }
