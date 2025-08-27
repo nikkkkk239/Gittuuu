@@ -13,6 +13,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   addFile: (path, content) => ipcRenderer.invoke("add-file", path, content),
   addFolder: (path) => ipcRenderer.invoke("add-folder", path),
   saveFile: (path, content) => ipcRenderer.invoke("fs:saveFile", path, content),
-  deleteFile : (path) =>ipcRenderer.invoke("fs:dekete" , path),
+  deleteItem : (path) =>ipcRenderer.invoke("fs:delete" , path),
   renameFile : ( oldPath,newPath)=>ipcRenderer.invoke("fs:rename" , oldPath , newPath)
 });

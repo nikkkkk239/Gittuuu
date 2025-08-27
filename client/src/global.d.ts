@@ -16,6 +16,7 @@ declare global {
       onFileSelected: (callback: (filePath: string) => void) => void;
       addFile : (newFilePath : string , content: string)=>Promise<boolean>;
       addFolder : (newFolderPath : string)=>Promise<boolean>;
+      deleteItem : (itemPath : string)=>Promise<boolean>;
     };
   }
 }

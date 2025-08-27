@@ -32,14 +32,9 @@ ipcMain.handle("logout",async()=>{
 })
 
 ipcMain.handle("fs:delete", async (_, targetPath) => {
-  if (fs.existsSync(targetPath)) {
-    const stat = fs.lstatSync(targetPath);
-    if (stat.isDirectory()) {
-      fs.rmSync(targetPath, { recursive: true, force: true });
-    } else {
-      fs.unlinkSync(targetPath);
-    }
-  }
+  console.log("Deleting:", targetPath);
+
+  fs.rmSync(targetPath, { recursive: true, force: true });
   return true;
 });
 
@@ -55,13 +50,18 @@ ipcMain.handle("fs:saveFile", async (_, filePath, content) => {
 });
 
 ipcMain.handle("fs:readDirectory", async (_, dirPath) => {
-  const items = fs.readdirSync(dirPath, { withFileTypes: true });
-
-  return items.filter(item => !item.name.startsWith(".")).map(item => ({
-    name: item.name,
-    path: pathModule.join(dirPath, item.name),
-    isDirectory: item.isDirectory()
-  }));
+  const files = fs.readdirSync(dirPath);
+  return files
+    .filter(file => !file.startsWith(".")) // hide hidden files/folders
+    .map(file => {
+      const fullPath = path.join(dirPath, file);
+      const stats = fs.statSync(fullPath);
+      return {
+        name: file,
+        path: fullPath,             // ✅ full path
+        isDirectory: stats.isDirectory(),
+      };
+    });
 });
 
 ipcMain.handle("add-file", async (_, filePath, content) => {
