@@ -14,5 +14,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   addFolder: (path) => ipcRenderer.invoke("add-folder", path),
   saveFile: (path, content) => ipcRenderer.invoke("fs:saveFile", path, content),
   deleteItem : (path) =>ipcRenderer.invoke("fs:delete" , path),
-  renameFile : ( oldPath,newPath)=>ipcRenderer.invoke("fs:rename" , oldPath , newPath)
+  renameItem : ( oldPath,newPath)=>ipcRenderer.invoke("fs:rename" , oldPath , newPath),
+  writeFile: (path, content) => ipcRenderer.invoke("write-file", path, content),
 });

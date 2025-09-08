@@ -1,6 +1,8 @@
+import Editor from "@monaco-editor/react";
 import React, { useEffect, useState } from "react";
 import { useFolder } from "../context/FolderContext";
 import { useAuth } from "../context/AuthContext";
+import path from "path";
 import {
   ChevronDown,
   ChevronRight,
@@ -33,6 +35,11 @@ const HomePage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [openingFile, setOpeningFile] = useState<boolean>(false);
   const [activeFolder, setActiveFolder] = useState<string | null>(folderPath);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [unsaved, setUnsaved] = useState<Record<string, boolean>>({});
+  const [autoSave, setAutoSave] = useState<boolean>(true); // default ON
+
 
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const { logout } = useAuth();
@@ -65,9 +72,6 @@ const HomePage: React.FC = () => {
   const readDirectoryRecursive = async (path: string): Promise<FileItem[]> => {
     const items = await window.electronAPI.readDirectory(path);
     const results: FileItem[] = [];
-
-
-
     for (const item of items) {
       if (item.isDirectory) {
         results.push({
@@ -102,6 +106,17 @@ const HomePage: React.FC = () => {
       })();
     }
   }, [folderPath, filePath]);
+
+  useEffect(() => {
+    if (!activeTab || !unsaved[activeTab] || !autoSave) return;
+
+    const timer = setTimeout(() => {
+      handleSaveFile(activeTab);
+    }, 2000); // 2s debounce
+
+    return () => clearTimeout(timer);
+  }, [openTabs, activeTab, unsaved, autoSave]);
+
 
   const handleFileClick = async (file: FileItem) => {
     setOpeningFile(true);
@@ -143,20 +158,24 @@ const HomePage: React.FC = () => {
 
   
 
-   const handleAddFile = () => {
-    if (!activeFolder) return;
+   const handleAddFile = (basePath?: string) => {
+    const target = basePath || activeFolder;
+    if (!target) return;
     setIsFolder(false);
     setNewName("");
+    setActiveFolder(target); // ensure input attaches to right folder
     setShowInput(true);
   };
 
-  // Trigger new folder creation (show input box)
-  const handleAddFolder = () => {
-    if (!activeFolder) return;
+  const handleAddFolder = (basePath?: string) => {
+    const target = basePath || activeFolder;
+    if (!target) return;
     setIsFolder(true);
     setNewName("");
+    setActiveFolder(target);
     setShowInput(true);
   };
+
 
   // When user presses Enter in the input field
   const handleCreate = async () => {
@@ -180,6 +199,80 @@ const HomePage: React.FC = () => {
     setShowInput(false);
     setNewName("");
   };
+
+  const handleSaveFile = async (filePath: string) => {
+    const file = openTabs.find((tab) => tab.path === filePath);
+    if (!file) return;
+
+    try {
+      await window.electronAPI.writeFile(filePath, file.content);
+      setUnsaved((prev) => {
+        const updated = { ...prev };
+        delete updated[filePath];
+        return updated;
+      });
+      console.log(`File saved: ${filePath}`);
+    } catch (err) {
+      console.error("Error saving file:", err);
+    }
+  };
+
+
+  const detectLanguage = (filePath: string) => {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "js":
+      return "javascript";
+    case "ts":
+      return "typescript";
+    case "json":
+      return "json";
+    case "md":
+      return "markdown";
+    case "html":
+      return "html";
+    case "css":
+      return "css";
+    case "py":
+      return "python";
+    case "java":
+      return "java";
+    case "cpp":
+    case "cc":
+    case "c":
+      return "cpp";
+    default:
+      return "plaintext";
+  }
+};
+
+
+  const handleRenameConfirm = async () => {
+  if (!renamingPath || !renameValue.trim()) {
+    setRenamingPath(null);
+    setRenameValue("");
+    return;
+  }
+
+  const pathParts = renamingPath.split(/[/\\]/);
+pathParts.pop();
+const newPath = [...pathParts, renameValue.trim()].join("/");
+
+
+  try {
+    await window.electronAPI.renameItem(renamingPath, newPath);
+    const updatedTree = await readDirectoryRecursive(folderPath!);
+    setFileTree(updatedTree);
+  } catch (err) {
+    console.error("Rename failed:", err);
+  }
+
+  setRenamingPath(null);
+  setRenameValue("");
+};
+
+
+  
   const handleDelete = async (item: any) => {
     await window.electronAPI.deleteItem(item.path);
 
@@ -204,11 +297,12 @@ const HomePage: React.FC = () => {
     
   return <ul className="pl-2 overflow-y-scroll max-h-[87vh]">
     {items.map((item) => (
-      <li key={item.path} onContextMenu={(e) => handleRightClick(e, item)}>
+      <li key={item.path} >
         {item.isDirectory ? (
           <>
             <div
               className={`flex items-center justify-between group font-bold cursor-pointer ${activeFolder == item.path && "bg-white/45"} hover:bg-white/20 px-1`}
+              onContextMenu={(e) => handleRightClick(e, item)}
               onClick={() => {
                 toggleFolder(item.path);
                 setActiveFolder(item.path); // mark this as current target
@@ -218,7 +312,25 @@ const HomePage: React.FC = () => {
                 <span className="mr-1">
                   {expandedFolders.has(item.path) ? <ChevronDown /> : <ChevronRight />}
                 </span>
-                📁 {item.name}
+                {renamingPath === item.path ? (
+                  <input
+                    type="text"
+                    value={renameValue}
+                    autoFocus
+                    className="bg-gray-800 text-white px-2 py-1 rounded"
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={handleRenameConfirm}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleRenameConfirm();
+                      if (e.key === "Escape") {
+                        setRenamingPath(null);
+                        setRenameValue("");
+                      }
+                    }}
+                  />
+                ) : (
+                  <span>📁 {item.name}</span>
+                )}
               </div>
             </div>
             {showInput && activeFolder == item.path && (
@@ -249,8 +361,27 @@ const HomePage: React.FC = () => {
           <div
             className="cursor-pointer hover:bg-white/20 px-1"
             onClick={() => handleFileClick(item)}
+            onContextMenu={(e) => handleRightClick(e, item)}
           >
-            📄 {item.name}
+            {renamingPath === item.path ? (
+              <input
+                type="text"
+                value={renameValue}
+                autoFocus
+                className="bg-gray-800 text-white px-2 py-1 rounded"
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={handleRenameConfirm}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRenameConfirm();
+                  if (e.key === "Escape") {
+                    setRenamingPath(null);
+                    setRenameValue("");
+                  }
+                }}
+              />
+            ) : (
+              <span>📄 {item.name}</span>
+            )}
           </div>
         )}
       </li>
@@ -273,7 +404,12 @@ const HomePage: React.FC = () => {
                 <>
                   <button
                     className="block cursor-pointer w-full text-left px-3 py-2 hover:bg-blue-500"
-                    // onClick={() => handleRename(contextMenu.item)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRenamingPath(contextMenu.item.path);
+                      setRenameValue(contextMenu.item.name);
+                      closeContextMenu();
+                    }}
                   >
                     Rename
                   </button>
@@ -293,18 +429,33 @@ const HomePage: React.FC = () => {
                   <button
                     className="block w-full cursor-pointer text-left px-3 py-2 hover:bg-blue-500"
                     // onClick={() => handleNewFile(contextMenu.item)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleAddFile(contextMenu.item.path);
+                      closeContextMenu();
+                    }}
                   >
                     New File
                   </button>
                   <button
                     className="block w-full cursor-pointer text-left px-3 py-2 hover:bg-blue-500"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleAddFolder(contextMenu.item.path);
+                      closeContextMenu();
+                    }}
                     // onClick={() => handleNewFolder(contextMenu.item)}
                   >
                     New Folder
                   </button>
                   <button
                     className="block w-full cursor-pointer text-left px-3 py-2 hover:bg-blue-500"
-                    // onClick={() => handleRename(contextMenu.item)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRenamingPath(contextMenu.item.path);
+                      setRenameValue(contextMenu.item.name);
+                      closeContextMenu();
+                    }}
                   >
                     Rename
                   </button>
@@ -393,12 +544,21 @@ const HomePage: React.FC = () => {
             <p>No folder or file selected</p>
           )}
         </div>
-        <button
-          onClick={handleLogout} title="Logout"
-          className={` transition-all duration-150  py-2 ${isSideBarOpen && "bg-white/10 hover:bg-white/20"} rounded-4xl cursor-pointer`}
-        >
-          {isSideBarOpen ? "Logout":<LogOutIcon size={16} className="m-auto"/> }
-        </button>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={() => setAutoSave(!autoSave)}
+            className={` transition-all duration-150  py-2 ${isSideBarOpen && "bg-white/10 hover:bg-white/20"} rounded-4xl cursor-pointer`}
+          >
+            {autoSave ? "Auto Save: ON" : "Auto Save: OFF"}
+          </button>
+
+          <button
+            onClick={handleLogout} title="Logout"
+            className={` transition-all duration-150  py-2 ${isSideBarOpen && "bg-white/10 hover:bg-white/20"} rounded-4xl cursor-pointer`}
+          >
+            {isSideBarOpen ? "Logout":<LogOutIcon size={16} className="m-auto"/> }
+          </button>
+        </div>
       </div>
 
       {/* Main content */}
@@ -415,7 +575,10 @@ const HomePage: React.FC = () => {
               }`}
               onClick={() => setActiveTab(tab.path)}
             >
-              <p className="whitespace-nowrap">{tab.name}</p>
+              <p className="whitespace-nowrap">
+                {tab.name}{unsaved[tab.path] ? " *" : ""}
+              </p>
+
               <span
                 onClick={(e) => {
                   e.stopPropagation();
@@ -432,15 +595,41 @@ const HomePage: React.FC = () => {
         </div>
 
         {/* Editor Area */}
-        <div className="flex-1 p-4 overflow-x-scroll scrollbar-thin w-full bg-black">
-          {activeTab ? (
-            <pre className="whitespace-pre-wrap scrollbar-thin">
-              {openTabs.find((tab) => tab.path === activeTab)?.content}
-            </pre>
-          ) : (
-            <p className="text-gray-500">Select a file to view its content</p>
-          )}
-        </div>
+
+      <div className="flex-1 overflow-hidden w-full bg-black">
+        {activeTab ? (
+          <Editor
+            height="100%"
+            defaultLanguage={detectLanguage(activeTab)}
+            value={openTabs.find((tab) => tab.path === activeTab)?.content || ""}
+            theme="vs-dark"
+            onChange={(value) => {
+              setOpenTabs((prev) =>
+                prev.map((tab) =>
+                  tab.path === activeTab ? { ...tab, content: value || "" } : tab
+                )
+              );
+              setUnsaved((prev) => ({ ...prev, [activeTab]: true }));
+            }}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 14,
+              scrollBeyondLastLine: false,
+              automaticLayout: true,
+            }}
+            onMount={(editor, monaco) => {
+              // Ctrl+S / Cmd+S → save
+              editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+                handleSaveFile(activeTab);
+              });
+            }}
+          />
+
+        ) : (
+          <p className="text-gray-500">Select a file to view its content</p>
+        )}
+      </div>
+
       </div>
     </div>
   );

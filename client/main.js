@@ -3,7 +3,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import simpleGit from "simple-git";
 import fs from "fs";
+
 import pathModule from "path";
+import { systemPreferences } from "electron";
+
+if (process.platform === "darwin") {
+  systemPreferences.askForMediaAccess("screen"); 
+}
 
 ipcMain.handle("dialog:openFolder", async () => {
   console.log("Opening folder dialog...");
@@ -38,6 +44,16 @@ ipcMain.handle("fs:delete", async (_, targetPath) => {
   return true;
 });
 
+ipcMain.handle("write-file", async (event, filePath, content) => {
+  try {
+    await fs.promises.writeFile(filePath, content, "utf-8");
+    return { success: true };
+  } catch (error) {
+    console.error("Error writing file:", error);
+    throw error;
+  }
+});
+
 ipcMain.handle("fs:rename", async (_, oldPath, newPath) => {
   fs.renameSync(oldPath, newPath);
   return true;
@@ -49,20 +65,26 @@ ipcMain.handle("fs:saveFile", async (_, filePath, content) => {
   return true;
 });
 
-ipcMain.handle("fs:readDirectory", async (_, dirPath) => {
-  const files = fs.readdirSync(dirPath);
-  return files
-    .filter(file => !file.startsWith(".")) // hide hidden files/folders
-    .map(file => {
-      const fullPath = path.join(dirPath, file);
-      const stats = fs.statSync(fullPath);
-      return {
-        name: file,
-        path: fullPath,             // ✅ full path
-        isDirectory: stats.isDirectory(),
-      };
-    });
+
+ipcMain.handle("fs:readDirectory", async (event, dirPath) => {
+  try {
+    const files = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    return files
+      .filter(f => !f.name.startsWith(".")) // skip hidden
+      .map(f => ({
+        name: f.name,
+        path: path.join(dirPath, f.name),
+        isDirectory: f.isDirectory()
+      }));
+  } catch (err) {
+    console.error("readDirectory failed:", err);
+    throw err;
+  }
 });
+
+
+
+
 
 ipcMain.handle("add-file", async (_, filePath, content) => {
   fs.writeFileSync(filePath, content || "");
