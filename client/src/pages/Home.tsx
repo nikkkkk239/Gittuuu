@@ -34,6 +34,7 @@ const HomePage: React.FC = () => {
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [openingFile, setOpeningFile] = useState<boolean>(false);
+  const [consoleOutput, setConsoleOutput] = useState<string>("");
   const [activeFolder, setActiveFolder] = useState<string | null>(folderPath);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -270,6 +271,22 @@ const newPath = [...pathParts, renameValue.trim()].join("/");
   setRenamingPath(null);
   setRenameValue("");
 };
+
+
+const handleRunFile = async (filePath: string | null) => {
+  if (!filePath) return; // do nothing if no active tab
+
+  setConsoleOutput(""); // clear previous output
+  try {
+    const output = await window.electronAPI.runFile(filePath);
+    console.log(output);
+    setConsoleOutput(output);
+  } catch (err: any) {
+    setConsoleOutput(`Error: ${err.message || err}`);
+  }
+};
+
+
 
 
   
@@ -549,7 +566,8 @@ const newPath = [...pathParts, renameValue.trim()].join("/");
             onClick={() => setAutoSave(!autoSave)}
             className={` transition-all duration-150  py-2 ${isSideBarOpen && "bg-white/10 hover:bg-white/20"} rounded-4xl cursor-pointer`}
           >
-            {autoSave ? "Auto Save: ON" : "Auto Save: OFF"}
+            {isSideBarOpen ? autoSave ? "Auto Save: ON" : "Auto Save: OFF" : autoSave && <input type="checkbox" name="AutoSave" title="AutoSave" onChange={(e)=>setAutoSave(!autoSave)} checked={autoSave} id="" /> }
+
           </button>
 
           <button
@@ -564,34 +582,39 @@ const newPath = [...pathParts, renameValue.trim()].join("/");
       {/* Main content */}
       <div className={`flex-1 ${isSideBarOpen ? "w-[82%]" : "w-[97%]"}  flex flex-col`}>
         {/* Tabs */}
-        <div className={`flex w-full scrollbar-thin overflow-x-scroll  border-b border-gray-700 bg-white/20`}>
-          {openTabs.map((tab) => (
-            <div
-              key={tab.path}
-              className={`flex group items-center px-3 py-1 border-white/10 border-[1px] cursor-pointer ${
-                activeTab === tab.path
-                  ? "bg-white/10 text-white border-b-0 border-t-2 border-t-blue-500"
-                  : "bg-white/10 text-white/30"
-              }`}
-              onClick={() => setActiveTab(tab.path)}
-            >
-              <p className="whitespace-nowrap">
-                {tab.name}{unsaved[tab.path] ? " *" : ""}
-              </p>
-
-              <span
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.path);
-                }}
-                className={`ml-2 ${
-                  activeTab == tab.path ? "opacity-100" : "opacity-0"
-                } group-hover:opacity-100 cursor-pointer`}
+        <div className="flex ">
+          <div className={`flex w-full scrollbar-thin overflow-x-scroll  border-b border-gray-700 bg-white/20`}>
+            {openTabs.map((tab) => (
+              <div
+                key={tab.path}
+                className={`flex group items-center px-3 py-1 border-white/10 border-[1px] cursor-pointer ${
+                  activeTab === tab.path
+                    ? "bg-white/10 text-white border-b-0 border-t-2 border-t-blue-500"
+                    : "bg-white/10 text-white/30"
+                }`}
+                onClick={() => setActiveTab(tab.path)}
               >
-                x
-              </span>
-            </div>
-          ))}
+                <p className="whitespace-nowrap">
+                  {tab.name}{unsaved[tab.path] ? " *" : ""}
+                </p>
+
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.path);
+                  }}
+                  className={`ml-2 ${
+                    activeTab == tab.path ? "opacity-100" : "opacity-0"
+                  } group-hover:opacity-100 cursor-pointer`}
+                >
+                  x
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="flex px-1 ">
+            <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-2" onClick={() => handleRunFile(activeTab)} disabled={!activeTab}>Run</button>
+          </div>
         </div>
 
         {/* Editor Area */}
@@ -600,6 +623,7 @@ const newPath = [...pathParts, renameValue.trim()].join("/");
         {activeTab ? (
           <Editor
             height="100%"
+            width="100%"
             defaultLanguage={detectLanguage(activeTab)}
             value={openTabs.find((tab) => tab.path === activeTab)?.content || ""}
             theme="vs-dark"
@@ -612,23 +636,74 @@ const newPath = [...pathParts, renameValue.trim()].join("/");
               setUnsaved((prev) => ({ ...prev, [activeTab]: true }));
             }}
             options={{
-              minimap: { enabled: false },
+              minimap: { enabled: true },
               fontSize: 14,
               scrollBeyondLastLine: false,
               automaticLayout: true,
+              padding: { top: 16, bottom: 8 }
             }}
             onMount={(editor, monaco) => {
-              // Ctrl+S / Cmd+S → save
-              editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-                handleSaveFile(activeTab);
-              });
-            }}
+          monaco.editor.defineTheme('custom-vscode-dark', {
+          base: 'vs-dark',
+          inherit: true,
+          rules: [
+            { token: '', foreground: 'C0C0C0', background: '000000' }, // Default text gray, background black
+            { token: 'comment', foreground: '6A9955', fontStyle: 'italic' },
+            { token: 'keyword', foreground: '569CD6', fontStyle: 'bold' },
+            { token: 'identifier', foreground: '4FC1FF' }, // Variables/functions blue
+            { token: 'number', foreground: 'B5CEA8' },
+            { token: 'string', foreground: 'CE9178' },
+            { token: 'type', foreground: '4EC9B0' },
+            { token: 'delimiter', foreground: 'D4D4D4' },
+            { token: 'operator', foreground: 'D4D4D4' },
+            { token: 'constant', foreground: '4FC1FF' },
+            { token: 'function', foreground: 'DCDCAA' },
+            { token: 'class', foreground: '4EC9B0' },
+            { token: 'interface', foreground: 'B8D7A3' },
+            { token: 'namespace', foreground: '4EC9B0' },
+            { token: 'typeParameter', foreground: '4EC9B0' },
+            { token: 'regexp', foreground: 'D16969' },
+            { token: 'annotation', foreground: 'C586C0' },
+            { token: 'import', foreground: 'DCDCAA' }, // Import statements
+            { token: 'literal', foreground: 'CE9178' }, // Literals
+          ],
+          colors: {
+            'editor.background': '#000000', // Full black
+            'editor.foreground': '#C0C0C0', // Default soft gray
+            'editorLineNumber.foreground': '#858585',
+            'editorLineNumber.activeForeground': '#A0A0A0',
+            'editorCursor.foreground': '#FFFFFF',
+            'editor.selectionBackground': '#264F78',
+            'editor.inactiveSelectionBackground': '#3A3D41',
+            'editorIndentGuide.background': '#404040',
+            'editorIndentGuide.activeBackground': '#707070',
+            'editor.selectionHighlightBackground': '#264F78',
+            'editor.wordHighlightBackground': '#575757',
+            'editor.wordHighlightStrongBackground': '#454545',
+            'editor.findMatchBackground': '#555555',
+            'editor.findMatchHighlightBackground': '#444444',
+            'editor.hoverHighlightBackground': '#2A2D2E',
+            'editor.lineHighlightBackground': '#1A1A1A',
+          },
+        });
+
+        monaco.editor.setTheme('custom-vscode-dark');
+
+          // Ctrl+S / Cmd+S → save
+          editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+            handleSaveFile(activeTab);
+          });
+        }}
           />
 
         ) : (
           <p className="text-gray-500">Select a file to view its content</p>
         )}
       </div>
+      <div className="h-40 bg-black text-white font-mono p-2 overflow-y-scroll border-t border-gray-700">
+        <pre>{consoleOutput}</pre>
+      </div>
+
 
       </div>
     </div>

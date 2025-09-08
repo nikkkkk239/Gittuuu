@@ -19,6 +19,7 @@ declare global {
       deleteItem : (itemPath : string)=>Promise<boolean>;
       renameItem : (oldPath : string , newPath : string)=>Promise<boolean>;
       writeFile: (path: string, content: string) => Promise<void>;
+      runFile: (filePath: string) => Promise<string>;
     };
   }
 }
