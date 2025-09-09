@@ -4,79 +4,58 @@ import { fileURLToPath } from 'url';
 import simpleGit from "simple-git";
 import fs from "fs";
 import { spawn } from "child_process";
+import { exec } from "child_process";
+import util from "util";
+
+const execPromise = util.promisify(exec);
+
 
 if (process.platform === "darwin") {
   systemPreferences.askForMediaAccess("screen"); 
 }
 
+// Run a single file inside Docker and return combined stdout+stderr
+ipcMain.handle("run-file", async (_, filePath) => {
+  if (!filePath) throw new Error("No file path supplied");
 
-ipcMain.handle("run-file", async (_event, filePath) => {
-  return new Promise((resolve, reject) => {
-    const ext = path.extname(filePath).toLowerCase();
-    let cmd;
-    let args= [];
+  // quick docker availability check
+  try {
+    await execPromise("docker --version");
+  } catch (err) {
+    throw new Error("Docker not found or not running. Install & start Docker Desktop.");
+  }
 
-    switch (ext) {
-      case ".js":
-        cmd = "node";
-        args = [filePath];
-        break;
-      case ".ts":
-        cmd = "ts-node"; // make sure ts-node installed globally or in project
-        args = [filePath];
-        break;
-      case ".py":
-        cmd = "python";
-        args = [filePath];
-        break;
-      case ".java":
-        cmd = "javac";
-        args = [filePath];
-        break;
-      case ".cpp":
-      case ".c":
-        cmd = "g++";
-        args = [filePath, "-o", `${filePath}.out`];
-        break;
-      default:
-        return reject(new Error("Unsupported file type"));
-    }
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const ext = path.extname(filePath).toLowerCase();
 
-    const process = spawn(cmd, args, { shell: true });
+  let dockerCmd = "";
 
-    let output = "";
-    process.stdout.on("data", (data) => {
-      output += data.toString();
-    });
+  if (ext === ".cpp" || ext === ".cc" || ext === ".c") {
+    // compile inside container to /tmp/app (so host dir doesn't get a binary)
+    dockerCmd = `docker run --rm -v "${dir}:/workspace" -w /workspace gcc:latest bash -lc "g++ \\"${base}\\" -o /tmp/app && /tmp/app"`;
+  } else if (ext === ".py") {
+    dockerCmd = `docker run --rm -v "${dir}:/workspace" -w /workspace python:3.10 python3 "${base}"`;
+  } else if (ext === ".js") {
+    dockerCmd = `docker run --rm -v "${dir}:/workspace" -w /workspace node:18 node "${base}"`;
+  } else {
+    throw new Error(`Unsupported file type: ${ext}`);
+  }
 
-    process.stderr.on("data", (data) => {
-      output += data.toString();
-    });
-
-    process.on("close", (code) => {
-      if (ext === ".cpp" || ext === ".c") {
-        // run compiled output
-        const runProcess = spawn(`${filePath}.out`, { shell: true });
-        let runOutput = "";
-        runProcess.stdout.on("data", (d) => (runOutput += d.toString()));
-        runProcess.stderr.on("data", (d) => (runOutput += d.toString()));
-        runProcess.on("close", () => resolve(runOutput));
-      } else if (ext === ".java") {
-        // run Java class
-        const className = path.basename(filePath, ".java");
-        const runProcess = spawn("java", [className], { cwd: path.dirname(filePath), shell: true });
-        let runOutput = "";
-        runProcess.stdout.on("data", (d) => (runOutput += d.toString()));
-        runProcess.stderr.on("data", (d) => (runOutput += d.toString()));
-        runProcess.on("close", () => resolve(runOutput));
-      } else {
-        resolve(output);
-      }
-    });
-
-    process.on("error", (err) => reject(err));
-  });
+  try {
+    // increase buffer in case the output is large
+    const { stdout, stderr } = await execPromise(dockerCmd, { maxBuffer: 10 * 1024 * 1024 });
+    // prefer stdout then stderr
+    return (stdout || "") + (stderr || "");
+  } catch (err) {
+    // execPromise errors often contain stdout/stderr — return that to the renderer for debugging
+    const stdout = err.stdout || "";
+    const stderr = err.stderr || err.message || "";
+    // provide useful message
+    return stdout + stderr + `\n--- command failed: ${err.message || "error"} ---`;
+  }
 });
+
 
 ipcMain.handle("dialog:openFolder", async () => {
   console.log("Opening folder dialog...");
