@@ -7,7 +7,7 @@ import { Toaster } from 'react-hot-toast';
 import { BrowserRouter } from 'react-router-dom';
 import { FolderProvider } from "./context/FolderContext";
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+
     <AuthProvider>
       <FolderProvider>
         <BrowserRouter>
@@ -16,5 +16,5 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         </BrowserRouter>
       </FolderProvider>
     </AuthProvider>
-  </React.StrictMode>
+
 );

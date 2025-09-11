@@ -1,4 +1,4 @@
-import { app, BrowserWindow ,systemPreferences,ipcMain, dialog,session ,Menu} from 'electron';
+import { app,shell, BrowserWindow ,systemPreferences,ipcMain, dialog,session ,Menu} from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import simpleGit from "simple-git";
@@ -13,6 +13,41 @@ const execPromise = util.promisify(exec);
 if (process.platform === "darwin") {
   systemPreferences.askForMediaAccess("screen"); 
 }
+let htmlServer = null; // keep reference to server process
+let serverStarted = false;
+
+ipcMain.handle("run-html", async (_event, filePath) => {
+  return new Promise((resolve, reject) => {
+    const dirPath = filePath.replace(/\/[^/]+$/, ""); // folder of HTML file
+    const fileName = filePath.split("/").pop();
+
+    if (!serverStarted) {
+      // start server only once
+      htmlServer = spawn("npx", ["http-server", "-p", "5500", dirPath]);
+
+      htmlServer.stdout.on("data", (data) => {
+        console.log(`server: ${data}`);
+        serverStarted = true;
+        // open once
+        shell.openExternal("http://localhost:5500/" + fileName);
+        resolve("Live server started on http://localhost:5500/");
+      });
+
+      htmlServer.stderr.on("data", (data) => {
+        reject(`Error: ${data}`);
+      });
+
+      htmlServer.on("close", () => {
+        serverStarted = false;
+        htmlServer = null;
+      });
+    } else {
+      // if server is already running, just open the file in same server
+      shell.openExternal("http://localhost:5500/" + fileName);
+      resolve("Opened in existing server");
+    }
+  });
+});
 
 // Run a single file inside Docker and return combined stdout+stderr
 ipcMain.handle("run-file", async (_, filePath) => {

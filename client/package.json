@@ -29,6 +29,7 @@
     "dotenv": "^17.2.1",
     "firebase": "^12.1.0",
     "fs": "^0.0.1-security",
+    "http-server": "^14.1.1",
     "lucide-react": "^0.539.0",
     "monaco-editor": "^0.52.2",
     "ogl": "^1.0.11",

@@ -20,6 +20,7 @@ declare global {
       renameItem : (oldPath : string , newPath : string)=>Promise<boolean>;
       writeFile: (path: string, content: string) => Promise<void>;
       runFile: (filePath: string) => Promise<string>;
+      runHtml: (filePath: string) => Promise<string>;
     };
   }
 }

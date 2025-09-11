@@ -34,6 +34,7 @@ const HomePage: React.FC = () => {
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [openingFile, setOpeningFile] = useState<boolean>(false);
+  const [running , setRunning] = useState<boolean>(false);
   const [consoleOutput, setConsoleOutput] = useState<string>("");
   const [activeFolder, setActiveFolder] = useState<string | null>(folderPath);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
@@ -278,11 +279,19 @@ const handleRunFile = async (filePath: string | null) => {
 
   setConsoleOutput(""); // clear previous output
   try {
-    const output = await window.electronAPI.runFile(filePath);
-    console.log(output);
-    setConsoleOutput(output);
+    setRunning(true);
+    if (filePath.endsWith(".html")) {
+      const result = await window.electronAPI.runHtml(filePath);
+      setConsoleOutput(result);
+    } else {
+      const result = await window.electronAPI.runFile(filePath);
+      setConsoleOutput(result);
+    }
   } catch (err: any) {
     setConsoleOutput(`Error: ${err.message || err}`);
+  }
+  finally{
+    setRunning(false);
   }
 };
 
@@ -613,7 +622,7 @@ const handleRunFile = async (filePath: string | null) => {
             ))}
           </div>
           <div className="flex px-1 ">
-            <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-2" onClick={() => handleRunFile(activeTab)} disabled={!activeTab}>Run</button>
+            <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-2" onClick={() => handleRunFile(activeTab)} disabled={!activeTab || running}>{running ? "..." : "Run"}</button>
           </div>
         </div>
 
