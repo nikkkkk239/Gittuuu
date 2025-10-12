@@ -1,96 +1,9 @@
-import { app,shell, BrowserWindow ,systemPreferences,ipcMain, dialog,session ,Menu} from 'electron';
+import { app, shell, BrowserWindow, ipcMain, dialog, session, Menu } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import simpleGit from "simple-git";
 import fs from "fs";
-import { spawn } from "child_process";
-import { exec } from "child_process";
-import util from "util";
-
-const execPromise = util.promisify(exec);
-
-
-if (process.platform === "darwin") {
-  systemPreferences.askForMediaAccess("screen"); 
-}
-let htmlServer = null; // keep reference to server process
-let serverStarted = false;
-
-ipcMain.handle("run-html", async (_event, filePath) => {
-  return new Promise((resolve, reject) => {
-    const dirPath = filePath.replace(/\/[^/]+$/, ""); // folder of HTML file
-    const fileName = filePath.split("/").pop();
-
-    if (!serverStarted) {
-      // start server only once
-      htmlServer = spawn("npx", ["http-server", "-p", "5500", dirPath]);
-
-      htmlServer.stdout.on("data", (data) => {
-        console.log(`server: ${data}`);
-        serverStarted = true;
-        // open once
-        shell.openExternal("http://localhost:5500/" + fileName);
-        resolve("Live server started on http://localhost:5500/");
-      });
-
-      htmlServer.stderr.on("data", (data) => {
-        reject(`Error: ${data}`);
-      });
-
-      htmlServer.on("close", () => {
-        serverStarted = false;
-        htmlServer = null;
-      });
-    } else {
-      // if server is already running, just open the file in same server
-      shell.openExternal("http://localhost:5500/" + fileName);
-      resolve("Opened in existing server");
-    }
-  });
-});
-
-// Run a single file inside Docker and return combined stdout+stderr
-ipcMain.handle("run-file", async (_, filePath) => {
-  if (!filePath) throw new Error("No file path supplied");
-
-  // quick docker availability check
-  try {
-    await execPromise("docker --version");
-  } catch (err) {
-    throw new Error("Docker not found or not running. Install & start Docker Desktop.");
-  }
-
-  const dir = path.dirname(filePath);
-  const base = path.basename(filePath);
-  const ext = path.extname(filePath).toLowerCase();
-
-  let dockerCmd = "";
-
-  if (ext === ".cpp" || ext === ".cc" || ext === ".c") {
-    // compile inside container to /tmp/app (so host dir doesn't get a binary)
-    dockerCmd = `docker run --rm -v "${dir}:/workspace" -w /workspace gcc:latest bash -lc "g++ \\"${base}\\" -o /tmp/app && /tmp/app"`;
-  } else if (ext === ".py") {
-    dockerCmd = `docker run --rm -v "${dir}:/workspace" -w /workspace python:3.10 python3 "${base}"`;
-  } else if (ext === ".js") {
-    dockerCmd = `docker run --rm -v "${dir}:/workspace" -w /workspace node:18 node "${base}"`;
-  } else {
-    throw new Error(`Unsupported file type: ${ext}`);
-  }
-
-  try {
-    // increase buffer in case the output is large
-    const { stdout, stderr } = await execPromise(dockerCmd, { maxBuffer: 10 * 1024 * 1024 });
-    // prefer stdout then stderr
-    return (stdout || "") + (stderr || "");
-  } catch (err) {
-    // execPromise errors often contain stdout/stderr — return that to the renderer for debugging
-    const stdout = err.stdout || "";
-    const stderr = err.stderr || err.message || "";
-    // provide useful message
-    return stdout + stderr + `\n--- command failed: ${err.message || "error"} ---`;
-  }
-});
-
+// Removed screen recording permission request as it's not needed
 
 ipcMain.handle("dialog:openFolder", async () => {
   console.log("Opening folder dialog...");

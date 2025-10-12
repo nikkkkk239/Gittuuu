@@ -34,8 +34,6 @@ const HomePage: React.FC = () => {
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [openingFile, setOpeningFile] = useState<boolean>(false);
-  const [running , setRunning] = useState<boolean>(false);
-  const [consoleOutput, setConsoleOutput] = useState<string>("");
   const [activeFolder, setActiveFolder] = useState<string | null>(folderPath);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -275,24 +273,8 @@ const newPath = [...pathParts, renameValue.trim()].join("/");
 
 
 const handleRunFile = async (filePath: string | null) => {
-  if (!filePath) return; // do nothing if no active tab
-
-  setConsoleOutput(""); // clear previous output
-  try {
-    setRunning(true);
-    if (filePath.endsWith(".html")) {
-      const result = await window.electronAPI.runHtml(filePath);
-      setConsoleOutput(result);
-    } else {
-      const result = await window.electronAPI.runFile(filePath);
-      setConsoleOutput(result);
-    }
-  } catch (err: any) {
-    setConsoleOutput(`Error: ${err.message || err}`);
-  }
-  finally{
-    setRunning(false);
-  }
+  // Run button kept but functionality removed
+  console.log("Run button clicked for:", filePath);
 };
 
 
@@ -622,7 +604,7 @@ const handleRunFile = async (filePath: string | null) => {
             ))}
           </div>
           <div className="flex px-1 ">
-            <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-2" onClick={() => handleRunFile(activeTab)} disabled={!activeTab || running}>{running ? "..." : "Run"}</button>
+            <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-2" onClick={() => handleRunFile(activeTab)} disabled={!activeTab}>Run</button>
           </div>
         </div>
 
@@ -709,10 +691,6 @@ const handleRunFile = async (filePath: string | null) => {
           <p className="text-gray-500">Select a file to view its content</p>
         )}
       </div>
-      <div className="h-40 bg-black text-white font-mono p-2 overflow-y-scroll border-t border-gray-700">
-        <pre>{consoleOutput}</pre>
-      </div>
-
 
       </div>
     </div>
