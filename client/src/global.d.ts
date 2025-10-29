@@ -21,6 +21,10 @@ declare global {
       writeFile: (path: string, content: string) => Promise<void>;
       runFile: (filePath: string) => Promise<string>;
       runHtml: (filePath: string) => Promise<string>;
+      openInBrowser: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+      watchDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
+      stopWatching: (dirPath: string) => Promise<{ success: boolean }>;
+      onDirectoryChanged: (callback: (dirPath: string) => void) => () => void;
     };
   }
 }

@@ -3,7 +3,19 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import simpleGit from "simple-git";
 import fs from "fs";
+import { spawn } from "child_process";
+
 // Removed screen recording permission request as it's not needed
+
+// Store active terminal processes
+const terminalProcesses = new Map();
+// Store active running processes per terminal (for stdin input)
+const runningProcesses = new Map();
+
+// Store file system watchers
+const fsWatchers = new Map();
+const fsWatcherDebounceTimers = new Map();
+let mainWindow = null;
 
 ipcMain.handle("dialog:openFolder", async () => {
   console.log("Opening folder dialog...");
@@ -94,6 +106,274 @@ ipcMain.handle("fs:readFile", async (_, filePath) => {
   return fs.readFileSync(filePath, "utf-8");
 });
 
+// Open file in external application (browser for HTML, etc.)
+ipcMain.handle("run:openInBrowser", async (_, filePath) => {
+  try {
+    // Use Electron's shell to open HTML files in default browser
+    // shell.openExternal opens URLs/files in the default application
+    await shell.openPath(filePath);
+    return { success: true };
+  } catch (err) {
+    console.error("Error opening file in browser:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+// -------------------- Terminal Handlers --------------------
+let terminalIdCounter = 0;
+
+// Execute a single command
+ipcMain.handle("terminal:execute", async (event, terminalId, command, cwd) => {
+  return new Promise((resolve) => {
+    // Get the terminal's current working directory
+    const terminal = terminalProcesses.get(terminalId);
+    const actualCwd = terminal ? terminal.cwd : (cwd || process.cwd());
+    
+    console.log(`[Terminal ${terminalId}] Executing command: "${command}" in directory: ${actualCwd}`);
+    
+    // Kill any existing process for this terminal
+    if (runningProcesses.has(terminalId)) {
+      const oldProc = runningProcesses.get(terminalId);
+      if (oldProc && !oldProc.killed) {
+        oldProc.kill();
+      }
+      runningProcesses.delete(terminalId);
+    }
+    
+    // Use user's default shell on Unix systems for better compatibility
+    // On macOS, default is zsh, but fallback to bash if SHELL is not set
+    const shell = process.platform === "win32" 
+      ? "powershell.exe" 
+      : (process.env.SHELL || "/bin/zsh");
+    const shellArgs = process.platform === "win32" ? ["-Command", command] : ["-c", command];
+    
+    // Use shell: false when explicitly providing shell and args
+    // This ensures the command is properly parsed by bash, supporting pipes, redirects, etc.
+    const proc = spawn(shell, shellArgs, {
+      cwd: actualCwd,
+      env: process.env,
+      shell: false,  // Explicit shell handling, no wrapper needed
+      stdio: ['pipe', 'pipe', 'pipe']  // Explicitly set stdin, stdout, stderr to pipes
+    });
+    
+    // Store the process for stdin input
+    runningProcesses.set(terminalId, proc);
+    
+    // Keep stdin open and handle errors
+    proc.stdin.on('error', (err) => {
+      console.error(`[Terminal ${terminalId}] Stdin error:`, err);
+    });
+    
+    let output = "";
+    
+    proc.stdout.on("data", (data) => {
+      const text = data.toString();
+      output += text;
+      event.sender.send("terminal:output", terminalId, text);
+    });
+    
+    proc.stderr.on("data", (data) => {
+      const text = data.toString();
+      output += text;
+      event.sender.send("terminal:output", terminalId, text);
+    });
+    
+    proc.on("close", (code) => {
+      runningProcesses.delete(terminalId);
+      event.sender.send("terminal:process-ended", terminalId);
+      resolve({ output, exitCode: code });
+    });
+    
+    proc.on("error", (err) => {
+      runningProcesses.delete(terminalId);
+      event.sender.send("terminal:process-ended", terminalId);
+      const errorMsg = `Error: ${err.message}\n`;
+      event.sender.send("terminal:output", terminalId, errorMsg);
+      resolve({ output: output + errorMsg, exitCode: 1 });
+    });
+  });
+});
+
+// Create a new terminal session
+ipcMain.handle("terminal:create", () => {
+  const id = terminalIdCounter++;
+  terminalProcesses.set(id, {
+    cwd: process.cwd(),
+    history: []
+  });
+  return { id, cwd: process.cwd() };
+});
+
+// Change directory for a terminal session
+ipcMain.handle("terminal:chdir", (_, terminalId, newDir) => {
+  console.log(`[Terminal ${terminalId}] Attempting to change directory to:`, newDir);
+  const terminal = terminalProcesses.get(terminalId);
+  if (terminal) {
+    try {
+      console.log(`[Terminal ${terminalId}] Current cwd:`, terminal.cwd);
+      
+      // Resolve the path relative to current directory
+      let targetDir = newDir.trim();
+      const currentCwd = terminal.cwd;
+      
+      // Handle empty string or "~" (home directory)
+      if (!targetDir || targetDir === "~") {
+        targetDir = process.env.HOME || process.env.USERPROFILE || currentCwd;
+      }
+      // Handle home directory with path (e.g., "~/Documents")
+      else if (targetDir.startsWith("~/")) {
+        const home = process.env.HOME || process.env.USERPROFILE || "";
+        if (home) {
+          targetDir = path.join(home, targetDir.slice(2));
+        }
+      }
+      // Use path.resolve to handle relative paths, .., ., etc.
+      else {
+        // Resolve relative to current working directory
+        targetDir = path.resolve(currentCwd, targetDir);
+      }
+      
+      // Normalize the path (resolve .. and . components)
+      targetDir = path.normalize(targetDir);
+      
+      console.log(`[Terminal ${terminalId}] Resolved path:`, targetDir);
+      
+      // Verify directory exists
+      const exists = fs.existsSync(targetDir);
+      const isDir = exists ? fs.statSync(targetDir).isDirectory() : false;
+      console.log(`[Terminal ${terminalId}] Path exists:`, exists, "Is directory:", isDir);
+      
+      if (exists && isDir) {
+        terminal.cwd = targetDir;
+        console.log(`[Terminal ${terminalId}] Successfully changed to:`, targetDir);
+        return { success: true, cwd: targetDir };
+      } else {
+        console.log(`[Terminal ${terminalId}] Failed: Directory not found`);
+        return { success: false, error: "Directory not found" };
+      }
+    } catch (err) {
+      console.log(`[Terminal ${terminalId}] Error:`, err.message);
+      return { success: false, error: err.message };
+    }
+  }
+  console.log(`[Terminal ${terminalId}] Terminal session not found`);
+  return { success: false, error: "Terminal not found" };
+});
+
+// Get current working directory for a terminal
+ipcMain.handle("terminal:getcwd", (_, terminalId) => {
+  const terminal = terminalProcesses.get(terminalId);
+  return terminal ? terminal.cwd : process.cwd();
+});
+
+// Close terminal session
+ipcMain.handle("terminal:close", (_, terminalId) => {
+  // Kill any running process
+  if (runningProcesses.has(terminalId)) {
+    const proc = runningProcesses.get(terminalId);
+    if (proc && !proc.killed) {
+      proc.kill();
+    }
+      runningProcesses.delete(terminalId);
+  }
+  terminalProcesses.delete(terminalId);
+  return true;
+});
+
+// Send input to running process
+ipcMain.handle("terminal:write", (_, terminalId, data) => {
+  const proc = runningProcesses.get(terminalId);
+  console.log(`[Terminal ${terminalId}] Writing to stdin:`, JSON.stringify(data), "Process:", proc ? "exists" : "null", proc && !proc.killed ? "alive" : "dead");
+  
+  if (proc && !proc.killed) {
+    try {
+      // Check if stdin is writable before writing
+      if (proc.stdin && proc.stdin.writable && !proc.stdin.destroyed) {
+        const success = proc.stdin.write(data);
+        if (!success) {
+          // Wait for drain if buffer is full
+          proc.stdin.once('drain', () => {
+            console.log(`[Terminal ${terminalId}] Stdin drained`);
+          });
+        }
+        console.log(`[Terminal ${terminalId}] Successfully wrote to stdin`);
+        return { success: true };
+      } else {
+        console.log(`[Terminal ${terminalId}] Stdin not writable`);
+        return { success: false, error: "Stdin not writable" };
+      }
+    } catch (err) {
+      console.error(`[Terminal ${terminalId}] Write error:`, err);
+      return { success: false, error: err.message };
+    }
+  }
+  console.log(`[Terminal ${terminalId}] No active process`);
+  return { success: false, error: "No active process" };
+});
+
+// Check if process is running
+ipcMain.handle("terminal:isRunning", (_, terminalId) => {
+  const proc = runningProcesses.get(terminalId);
+  return { isRunning: !!(proc && !proc.killed) };
+});
+
+// File system watching
+ipcMain.handle("fs:watchDirectory", (_, dirPath) => {
+  // Stop existing watcher for this directory if any
+  if (fsWatchers.has(dirPath)) {
+    fsWatchers.get(dirPath).close();
+    fsWatchers.delete(dirPath);
+  }
+  
+  // Skip if directory doesn't exist
+  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+    return { success: false, error: "Directory not found" };
+  }
+  
+  try {
+    // Watch directory for changes (recursive watching on macOS/Linux)
+    const watcher = fs.watch(dirPath, { recursive: true }, (eventType, filename) => {
+      // Only process if we have a window and filename exists
+      if (mainWindow && filename) {
+        // Clear existing debounce timer for this directory
+        if (fsWatcherDebounceTimers.has(dirPath)) {
+          clearTimeout(fsWatcherDebounceTimers.get(dirPath));
+        }
+        
+        // Debounce: wait 300ms after last change before sending event
+        const timer = setTimeout(() => {
+          mainWindow.webContents.send("fs:directory-changed", dirPath);
+          fsWatcherDebounceTimers.delete(dirPath);
+        }, 300);
+        
+        fsWatcherDebounceTimers.set(dirPath, timer);
+      }
+    });
+    
+    fsWatchers.set(dirPath, watcher);
+    return { success: true };
+  } catch (err) {
+    console.error("Error watching directory:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("fs:stopWatching", (_, dirPath) => {
+  if (fsWatchers.has(dirPath)) {
+    fsWatchers.get(dirPath).close();
+    fsWatchers.delete(dirPath);
+    
+    // Clear debounce timer if exists
+    if (fsWatcherDebounceTimers.has(dirPath)) {
+      clearTimeout(fsWatcherDebounceTimers.get(dirPath));
+      fsWatcherDebounceTimers.delete(dirPath);
+    }
+    
+    return { success: true };
+  }
+  return { success: false };
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -105,6 +385,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
   });
+  
+  mainWindow = win;
 
   const startURL =
     process.env.VITE_DEV_SERVER_URL ||
