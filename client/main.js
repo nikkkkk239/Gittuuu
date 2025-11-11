@@ -3,7 +3,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import simpleGit from "simple-git";
 import fs from "fs";
-import { spawn } from "child_process";
+import FormData from "form-data"
+import { spawn,execSync } from "child_process";
+import archiver from 'archiver';
+import axios from 'axios';
 
 // Removed screen recording permission request as it's not needed
 
@@ -16,6 +19,82 @@ const runningProcesses = new Map();
 const fsWatchers = new Map();
 const fsWatcherDebounceTimers = new Map();
 let mainWindow = null;
+
+function validateProject(projectPath) {
+  const pkgPath = path.join(projectPath, "package.json");
+  if (!fs.existsSync(pkgPath))
+    return { valid: false, message: "No package.json found. Not a deployable project." };
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+  const isCRA = !!deps["react-scripts"];
+  const isVite = !!deps["vite"];
+  const isNext = !!deps["next"];
+
+  if (!isCRA && !isVite && !isNext)
+    return { valid: false, message: "Unsupported project. Only CRA, Vite, Next are allowed." };
+
+  const hasClient = fs.existsSync(path.join(projectPath, "client"));
+  const hasServer = fs.existsSync(path.join(projectPath, "server"));
+  if (hasClient && hasServer)
+    return { valid: false, message: "Fullstack folder detected. Open either /client or /server and deploy separately." };
+
+  return { valid: true, type: isCRA ? "cra" : isVite ? "vite" : "next" };
+}
+
+async function zipProject(projectPath ){
+  const zipPath = path.join(projectPath, "../project.zip");
+  const output = fs.createWriteStream(zipPath);
+  const archive = archiver("zip" , {zlib:{level:9}});
+
+  return new Promise((resolve , reject)=>{
+    archive.directory( projectPath , false).pipe(output);
+    output.on("close" , ()=>{ resolve(zipPath);  });
+    archive.on("error" , (err)=>{ reject(err); });
+    archive.finalize();
+  });
+}
+
+
+
+ipcMain.handle("deploy:project", async (_, projectPath) => {
+  try {
+    const check = validateProject(projectPath);
+    if (!check.valid) return { success: false, error: check.message };
+
+    // Install + Build
+    execSync("npm install", { cwd: projectPath, stdio: "inherit" });
+    execSync("npm run build", { cwd: projectPath, stdio: "inherit" });
+
+    // Detect build output folder
+    let buildDir = {
+      cra: "build",
+      vite: "dist",
+      next: ".next"
+    }[check.type];
+
+    const buildPath = path.join(projectPath, buildDir);
+    if (!fs.existsSync(buildPath))
+      return { success: false, error: "Build failed, output folder not found." };
+
+    // Zip the build folder
+    const zipPath = await zipProject(buildPath);
+
+    // Send ZIP to server
+    const formData = new FormData();
+    formData.append("file", fs.createReadStream(zipPath));
+
+    const response = await axios.post("http://localhost:3000/deploy", formData, {
+      headers: formData.getHeaders(),
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error("Error deploying project:", error);
+    return { success: false, error: error.message };
+  }
+});
 
 ipcMain.handle("dialog:openFolder", async () => {
   console.log("Opening folder dialog...");

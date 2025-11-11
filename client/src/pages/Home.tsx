@@ -1073,6 +1073,20 @@ const handleRunFile = async (filePath: string | null) => {
             >
               <Play size={16} />
             </button>
+           <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-3 py-2 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed" disabled={!folderPath}
+              onClick={async () => {
+ // you can store this globally when folder opened
+                if (!folderPath) {
+                  alert("Please open a project first!");
+                  return;
+                } 
+                const result = await window.electronAPI.deployProject(folderPath);
+                if (result.success) alert(`Deployed! Visit: ${result.url}`);
+                else alert("Deployment failed: " + result.error);
+              }} title="Deploy Project"
+            >
+              🚀
+            </button>
             <button 
               className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-3 py-2 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed" 
               onClick={() => setShowFlowModal(true)}

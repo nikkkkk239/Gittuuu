@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("fs:directory-changed", (_, dirPath) => callback(dirPath));
     return () => ipcRenderer.removeAllListeners("fs:directory-changed");
   },
+  deployProject: (projectPath) => ipcRenderer.invoke("deploy:project", projectPath),
   
   // Terminal APIs
   terminal: {
@@ -46,6 +47,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
       const subscription = (_, terminalId) => callback(terminalId);
       ipcRenderer.on("terminal:process-ended", subscription);
       return () => ipcRenderer.removeListener("terminal:process-ended", subscription);
-    }
+    },
+    // Deployment
+    
+
   }
 });
