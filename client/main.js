@@ -31,16 +31,27 @@ function validateProject(projectPath) {
   const isCRA = !!deps["react-scripts"];
   const isVite = !!deps["vite"];
   const isNext = !!deps["next"];
+  const isExpress = !!deps["express"];
+  const isNodeBackend = isExpress || (!isCRA && !isVite && !isNext);
 
-  if (!isCRA && !isVite && !isNext)
-    return { valid: false, message: "Unsupported project. Only CRA, Vite, Next are allowed." };
+  // Determine project category
+  const isFrontend = isCRA || isVite || isNext;
+  const isBackend = isNodeBackend;
+
+  if (!isFrontend && !isBackend)
+    return { valid: false, message: "Unsupported project type." };
 
   const hasClient = fs.existsSync(path.join(projectPath, "client"));
   const hasServer = fs.existsSync(path.join(projectPath, "server"));
   if (hasClient && hasServer)
     return { valid: false, message: "Fullstack folder detected. Open either /client or /server and deploy separately." };
 
-  return { valid: true, type: isCRA ? "cra" : isVite ? "vite" : "next" };
+  return {
+    valid: true,
+    type: isCRA ? "react" : isVite ? "vite" : isNext ? "nextjs" : "nodejs",
+    category: isFrontend ? "frontend" : "backend",
+    deploymentPlatform: isFrontend ? "vercel" : "railway"
+  };
 }
 
 async function zipProject(projectPath ){
@@ -58,41 +69,88 @@ async function zipProject(projectPath ){
 
 
 
-ipcMain.handle("deploy:project", async (_, projectPath) => {
+ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) => {
   try {
     const check = validateProject(projectPath);
     if (!check.valid) return { success: false, error: check.message };
 
-    // Install + Build
-    execSync("npm install", { cwd: projectPath, stdio: "inherit" });
-    execSync("npm run build", { cwd: projectPath, stdio: "inherit" });
+    const {
+      platform = check.deploymentPlatform, // 'vercel', 'railway', or 'local'
+      projectName = path.basename(projectPath),
+      buildBeforeDeploy = true
+    } = deploymentOptions;
 
-    // Detect build output folder
-    let buildDir = {
-      cra: "build",
-      vite: "dist",
-      next: ".next"
-    }[check.type];
+    // For frontend projects, build first
+    if (check.category === "frontend" && buildBeforeDeploy) {
+      console.log("Installing dependencies...");
+      execSync("npm install", { cwd: projectPath, stdio: "inherit" });
+      
+      console.log("Building project...");
+      execSync("npm run build", { cwd: projectPath, stdio: "inherit" });
 
-    const buildPath = path.join(projectPath, buildDir);
-    if (!fs.existsSync(buildPath))
-      return { success: false, error: "Build failed, output folder not found." };
+      // Detect build output folder
+      let buildDir = {
+        react: "build",
+        vite: "dist",
+        nextjs: ".next"
+      }[check.type];
 
-    // Zip the build folder
-    const zipPath = await zipProject(buildPath);
+      const buildPath = path.join(projectPath, buildDir);
+      if (!fs.existsSync(buildPath))
+        return { success: false, error: "Build failed, output folder not found." };
+    }
 
-    // Send ZIP to server
+    // Zip the entire project (not just build folder for Docker support)
+    const zipPath = await zipProject(projectPath);
+
+    // Send ZIP to server with deployment platform info
     const formData = new FormData();
     formData.append("file", fs.createReadStream(zipPath));
+    formData.append("deploymentType", platform);
+    formData.append("projectType", check.category);
+    formData.append("projectName", projectName);
+    formData.append("frameworkType", check.type);
 
-    const response = await axios.post("http://localhost:3000/deploy", formData, {
+    const endpoint = platform === "local" 
+      ? "http://localhost:3000/deploy/local"
+      : "http://localhost:3000/deploy";
+
+    console.log(`Deploying to ${platform}...`);
+    const response = await axios.post(endpoint, formData, {
       headers: formData.getHeaders(),
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
     });
 
-    return response.data;
+    // Cleanup zip file
+    fs.unlinkSync(zipPath);
+
+    return {
+      ...response.data,
+      projectType: check.type,
+      deploymentPlatform: platform
+    };
   } catch (error) {
     console.error("Error deploying project:", error);
-    return { success: false, error: error.message };
+    return {
+      success: false,
+      error: error.message,
+      details: error.response?.data
+    };
+  }
+});
+
+// New handler to check deployment service health
+ipcMain.handle("deploy:checkHealth", async () => {
+  try {
+    const response = await axios.get("http://localhost:3000/health");
+    return response.data;
+  } catch (error) {
+    return {
+      status: "error",
+      message: "Deployment server not running",
+      error: error.message
+    };
   }
 });
 
