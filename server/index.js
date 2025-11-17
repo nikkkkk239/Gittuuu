@@ -7,6 +7,7 @@ import cors from "cors";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import FormData from "form-data";
+import { spawn } from "child_process";
 import { v4 as uuidv4 } from "uuid";
 import dotenv from "dotenv";
 
@@ -19,7 +20,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const upload = multer({ dest: "uploads/" });
+// Limit uploads to 200MB by default to avoid out-of-memory or truncated streams
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || String(200 * 1024 * 1024), 10);
+const upload = multer({ dest: "uploads/", limits: { fileSize: MAX_UPLOAD_BYTES } });
 
 // Vercel API endpoint
 const VERCEL_API = "https://api.vercel.com";
@@ -170,11 +173,76 @@ app.post("/deploy", upload.single("file"), async (req, res) => {
     const filePath = req.file.path;
     const extractPath = path.join(__dirname, "temp", uuidv4());
 
-    // Extract uploaded project
+    // Extract uploaded project with validation and robust stream/error handling
     fs.mkdirSync(extractPath, { recursive: true });
-    await fs.createReadStream(filePath)
-      .pipe(unzipper.Extract({ path: extractPath }))
-      .promise();
+
+    // Log uploaded file details for debugging
+    console.log("Uploaded file info:", {
+      savedPath: filePath,
+      originalName: req.file?.originalname,
+      mimetype: req.file?.mimetype,
+      sizeBytes: req.file?.size
+    });
+
+    // Quick sanity check: ensure file exists and has expected size
+    const stats = fs.statSync(filePath);
+    console.log(`Saved file size: ${stats.size} bytes`);
+    if (stats.size === 0) throw new Error("Uploaded file is empty");
+
+    // Try to open the zip first to verify integrity (gives clearer errors)
+    try {
+      // unzipper.Open.file will validate the central directory
+      await unzipper.Open.file(filePath);
+    } catch (err) {
+      // Provide a clearer message for the client
+      console.error("Zip validation failed:", err.message || err);
+      throw new Error("Uploaded ZIP appears to be corrupted or incomplete");
+    }
+
+    // Safer extraction: open archive and extract entries one by one to avoid streaming truncation issues
+    try {
+      const directory = await unzipper.Open.file(filePath);
+      for (const entry of directory.files) {
+        const entryPath = path.join(extractPath, entry.path);
+        // Ensure parent dir exists
+        fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+
+        // directories in zip have a trailing slash
+        if (entry.type === 'Directory') continue;
+
+        await new Promise((resolve, reject) => {
+          entry.stream()
+            .on('error', (err) => {
+              console.error('Error streaming zip entry', entry.path, err.message || err);
+              reject(new Error('Error extracting entry: ' + entry.path));
+            })
+            .pipe(fs.createWriteStream(entryPath))
+            .on('error', (err) => reject(err))
+            .on('finish', resolve);
+        });
+      }
+    } catch (err) {
+      console.error('Primary extraction via unzipper failed:', err.message || err);
+      console.log('Attempting fallback extraction using system unzip command...');
+      // Fallback: use system `unzip` command which is often more tolerant/robust
+      await new Promise((resolve, reject) => {
+        const unzip = spawn('unzip', ['-o', filePath, '-d', extractPath]);
+
+        unzip.stdout.on('data', (d) => console.log('[unzip stdout]', d.toString()));
+        unzip.stderr.on('data', (d) => console.error('[unzip stderr]', d.toString()));
+
+        unzip.on('error', (e) => {
+          console.error('Failed to start unzip process:', e.message || e);
+          reject(new Error('System unzip not available or failed to start'));
+        });
+
+        unzip.on('close', (code) => {
+          if (code === 0) return resolve();
+          return reject(new Error('unzip exited with code ' + code));
+        });
+      });
+      console.log('Fallback system unzip completed successfully');
+    }
 
     let result;
 
@@ -216,12 +284,47 @@ app.post("/deploy", upload.single("file"), async (req, res) => {
 app.post("/deploy/local", upload.single("file"), async (req, res) => {
   try {
     const filePath = req.file.path;
+    console.log("[local deploy] Uploaded file:", { savedPath: filePath, originalName: req.file?.originalname, size: req.file?.size });
     const deployPath = path.join(__dirname, "deployed", Date.now().toString());
 
     fs.mkdirSync(deployPath, { recursive: true });
-    await fs.createReadStream(filePath)
-      .pipe(unzipper.Extract({ path: deployPath }))
-      .promise();
+    // Extract with the same robust extractor used above
+    try {
+      await unzipper.Open.file(filePath);
+      await new Promise((resolve, reject) => {
+        const readStream = fs.createReadStream(filePath);
+        const extractor = unzipper.Extract({ path: deployPath });
+
+        let finished = false;
+        const cleanup = (err) => {
+          if (finished) return;
+          finished = true;
+          readStream.destroy();
+          extractor.removeAllListeners();
+          if (err) return reject(err);
+          return resolve();
+        };
+
+        readStream.on("error", (err) => {
+          console.error("Read stream error while extracting uploaded zip (local):", err.message || err);
+          cleanup(new Error("Error reading uploaded file"));
+        });
+
+        extractor.on("error", (err) => {
+          console.error("Unzipper extractor error (local):", err.message || err);
+          cleanup(new Error("Error extracting uploaded ZIP"));
+        });
+
+        extractor.on("close", () => {
+          cleanup();
+        });
+
+        readStream.pipe(extractor);
+      });
+    } catch (err) {
+      console.error("Local deploy extraction failed:", err.message || err);
+      throw err;
+    }
 
     const url = `http://localhost:3000/deployed/${path.basename(deployPath)}`;
 
