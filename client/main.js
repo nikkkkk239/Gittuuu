@@ -20,115 +20,138 @@ const fsWatchers = new Map();
 const fsWatcherDebounceTimers = new Map();
 let mainWindow = null;
 
-function validateProject(projectPath) {
-  const pkgPath = path.join(projectPath, "package.json");
-  if (!fs.existsSync(pkgPath))
-    return { valid: false, message: "No package.json found. Not a deployable project." };
 
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-  const isCRA = !!deps["react-scripts"];
-  const isVite = !!deps["vite"];
-  const isNext = !!deps["next"];
-  const isExpress = !!deps["express"];
-  const isNodeBackend = isExpress || (!isCRA && !isVite && !isNext);
-
-  // Determine project category
-  const isFrontend = isCRA || isVite || isNext;
-  const isBackend = isNodeBackend;
-
-  if (!isFrontend && !isBackend)
-    return { valid: false, message: "Unsupported project type." };
-
-  const hasClient = fs.existsSync(path.join(projectPath, "client"));
-  const hasServer = fs.existsSync(path.join(projectPath, "server"));
-  if (hasClient && hasServer)
-    return { valid: false, message: "Fullstack folder detected. Open either /client or /server and deploy separately." };
-
-  return {
-    valid: true,
-    type: isCRA ? "react" : isVite ? "vite" : isNext ? "nextjs" : "nodejs",
-    category: isFrontend ? "frontend" : "backend",
-    deploymentPlatform: isFrontend ? "vercel" : "railway"
-  };
+function isGitRepository(projectPath) {
+  try {
+    const rootEntries = fs.readdirSync(projectPath);
+    return rootEntries.includes(".git");
+  } catch {
+    return false;
+  }
 }
-
-async function zipProject(projectPath ){
-  const zipPath = path.join(projectPath, "../project.zip");
-  const output = fs.createWriteStream(zipPath);
-  const archive = archiver("zip" , {zlib:{level:9}});
-
-  return new Promise((resolve , reject)=>{
-    archive.directory( projectPath , false).pipe(output);
-    output.on("close" , ()=>{ resolve(zipPath);  });
-    archive.on("error" , (err)=>{ reject(err); });
-    archive.finalize();
-  });
-}
-
 
 
 ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) => {
   try {
-    const check = validateProject(projectPath);
-    if (!check.valid) return { success: false, error: check.message };
-
     const {
-      platform = check.deploymentPlatform, // 'vercel', 'railway', or 'local'
-      projectName = path.basename(projectPath),
-      buildBeforeDeploy = true
+      createRepoIfMissing = false,
+      githubAccessToken = "",
+      configureExistingRepo = false,
+      deploySubPath = ".",
+      projectType = "node"
     } = deploymentOptions;
 
-    // For frontend projects, build first
-    if (check.category === "frontend" && buildBeforeDeploy) {
-      console.log("Installing dependencies...");
-      execSync("npm install", { cwd: projectPath, stdio: "inherit" });
-      
-      console.log("Building project...");
-      execSync("npm run build", { cwd: projectPath, stdio: "inherit" });
+    if (!isGitRepository(projectPath)) {
+      if (createRepoIfMissing) {
+        if (!githubAccessToken) {
+          return {
+            success: false,
+            error: "GitHub session token missing. Please login again.",
+            canCreateRepo: true
+          };
+        }
 
-      // Detect build output folder
-      let buildDir = {
-        react: "build",
-        vite: "dist",
-        nextjs: ".next"
-      }[check.type];
+        const repoName = path.basename(projectPath);
+        const createRepoResponse = await axios.post(
+          "https://api.github.com/user/repos",
+          {
+            name: repoName,
+            private: false
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${githubAccessToken}`,
+              Accept: "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+            }
+          }
+        );
 
-      const buildPath = path.join(projectPath, buildDir);
-      if (!fs.existsSync(buildPath))
-        return { success: false, error: "Build failed, output folder not found." };
+        const cloneUrl = createRepoResponse.data?.clone_url;
+        if (!cloneUrl) {
+          return {
+            success: false,
+            error: "GitHub repo created but clone_url was not returned.",
+            canCreateRepo: true
+          };
+        }
+
+        const git = simpleGit(projectPath);
+        await git.init();
+
+        const remotes = await git.getRemotes(true);
+        const hasOrigin = remotes.some((remote) => remote.name === "origin");
+        if (hasOrigin) {
+          await git.removeRemote("origin");
+        }
+
+        await git.addRemote("origin", cloneUrl);
+        await git.add(".");
+
+        const status = await git.status();
+        if (status.files.length > 0) {
+          await git.commit("Initial commit");
+        }
+
+        await git.raw(["branch", "-M", "main"]);
+        await git.push("origin", "main");
+
+        return {
+          success: true,
+          createdRepo: true,
+          clone_url: cloneUrl
+        };
+      }
+
+      return {
+        success: false,
+        error: "Current folder is not a git repo. Please initialize one before deploying.",
+        canCreateRepo: true
+      };
     }
 
-    // Zip the entire project (not just build folder for Docker support)
-    const zipPath = await zipProject(projectPath);
+    if (!configureExistingRepo) {
+      return {
+        success: false,
+        canConfigureDeploy: true,
+        error: "Repository found. Please choose deploy path and project type."
+      };
+    }
 
-    // Send ZIP to server with deployment platform info
-    const formData = new FormData();
-    formData.append("file", fs.createReadStream(zipPath));
-    formData.append("deploymentType", platform);
-    formData.append("projectType", check.category);
-    formData.append("projectName", projectName);
-    formData.append("frameworkType", check.type);
+    const normalizedProjectType = String(projectType).toLowerCase();
+    const allowedProjectTypes = new Set(["node", "react", "next"]);
 
-    const endpoint = platform === "local" 
-      ? "http://localhost:3000/deploy/local"
-      : "http://localhost:3000/deploy";
+    if (!allowedProjectTypes.has(normalizedProjectType)) {
+      return {
+        success: false,
+        error: "Invalid project type. Choose Node, React, or Next."
+      };
+    }
 
-    console.log(`Deploying to ${platform}...`);
-    const response = await axios.post(endpoint, formData, {
-      headers: formData.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
+    const rootPath = path.resolve(projectPath);
+    const requestedSubPath = (deploySubPath || ".").trim() || ".";
+    const resolvedDeployPath = path.resolve(rootPath, requestedSubPath);
 
-    // Cleanup zip file
-    fs.unlinkSync(zipPath);
+    if (resolvedDeployPath !== rootPath && !resolvedDeployPath.startsWith(`${rootPath}${path.sep}`)) {
+      return {
+        success: false,
+        error: "Deploy path must be inside the current opened folder."
+      };
+    }
+
+    if (!fs.existsSync(resolvedDeployPath) || !fs.statSync(resolvedDeployPath).isDirectory()) {
+      return {
+        success: false,
+        error: "Deploy path does not exist or is not a folder."
+      };
+    }
 
     return {
-      ...response.data,
-      projectType: check.type,
-      deploymentPlatform: platform
+      success: true,
+      configuredDeploy: true,
+      deployPath: resolvedDeployPath,
+      projectType: normalizedProjectType
     };
   } catch (error) {
     console.error("Error deploying project:", error);
@@ -252,6 +275,16 @@ ipcMain.handle("run:openInBrowser", async (_, filePath) => {
     return { success: true };
   } catch (err) {
     console.error("Error opening file in browser:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("run:openExternal", async (_, targetUrl) => {
+  try {
+    await shell.openExternal(targetUrl);
+    return { success: true };
+  } catch (err) {
+    console.error("Error opening external URL:", err);
     return { success: false, error: err.message };
   }
 });

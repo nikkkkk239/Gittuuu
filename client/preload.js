@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   
   // Run/Execute files
   openInBrowser: (filePath) => ipcRenderer.invoke("run:openInBrowser", filePath),
+  openExternal: (targetUrl) => ipcRenderer.invoke("run:openExternal", targetUrl),
   
   // File system watching
   watchDirectory: (dirPath) => ipcRenderer.invoke("fs:watchDirectory", dirPath),
@@ -27,7 +28,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("fs:directory-changed", (_, dirPath) => callback(dirPath));
     return () => ipcRenderer.removeAllListeners("fs:directory-changed");
   },
-  deployProject: (projectPath) => ipcRenderer.invoke("deploy:project", projectPath),
+  deployProject: (projectPath, deploymentOptions = {}) => ipcRenderer.invoke("deploy:project", projectPath, deploymentOptions),
   
   // Terminal APIs
   terminal: {

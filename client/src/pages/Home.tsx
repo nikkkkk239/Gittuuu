@@ -60,10 +60,14 @@ const HomePage: React.FC = () => {
 
 
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const { logout } = useAuth();
+  const { logout, githubAccessToken } = useAuth();
   const [isSideBarOpen , setIsSideBarOpen] = useState(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [showFlowModal, setShowFlowModal] = useState(false);
+  const [showDeployConfigModal, setShowDeployConfigModal] = useState(false);
+  const [deploySubPath, setDeploySubPath] = useState(".");
+  const [deployProjectType, setDeployProjectType] = useState<"node" | "react" | "next">("node");
+  const [isSubmittingDeployConfig, setIsSubmittingDeployConfig] = useState(false);
   const analyzerRef = React.useRef(new CodeFlowAnalyzer());
 
   const [showInput, setShowInput] = useState(false);
@@ -256,6 +260,33 @@ const HomePage: React.FC = () => {
     localStorage.clear();
     setFolderPath(null);
     setFilePath(null);
+  };
+
+  const handleDeployConfigurationSubmit = async () => {
+    if (!folderPath) {
+      alert("Please open a project first!");
+      return;
+    }
+
+    setIsSubmittingDeployConfig(true);
+    try {
+      const configuredDeployResult = await window.electronAPI.deployProject(folderPath, {
+        configureExistingRepo: true,
+        deploySubPath: deploySubPath.trim() || ".",
+        projectType: deployProjectType,
+      });
+
+      if (configuredDeployResult.success) {
+        alert(
+          `Deploy config saved. Path: ${configuredDeployResult.deployPath}, Type: ${configuredDeployResult.projectType}`
+        );
+        setShowDeployConfigModal(false);
+      } else {
+        alert("Deployment failed: " + configuredDeployResult.error);
+      }
+    } finally {
+      setIsSubmittingDeployConfig(false);
+    }
   };
 
   const toggleFolder = (path: string) => {
@@ -1082,7 +1113,41 @@ const handleRunFile = async (filePath: string | null) => {
                 } 
                 const result = await window.electronAPI.deployProject(folderPath);
                 if (result.success) alert(`Deployed! Visit: ${result.url}`);
-                else alert("Deployment failed: " + result.error);
+                else {
+                  if (result.canCreateRepo) {
+                    const shouldCreateRepo = window.confirm(
+                      "Current folder is not a git repo. Do you want to create a GitHub repo now?"
+                    );
+
+                    if (shouldCreateRepo) {
+                      if (!githubAccessToken) {
+                        alert("GitHub token is missing. Please login again with GitHub.");
+                        return;
+                      }
+
+                      const createRepoResult = await window.electronAPI.deployProject(folderPath, {
+                        createRepoIfMissing: true,
+                        githubAccessToken,
+                      });
+
+                      if (createRepoResult.success) {
+                        alert(`GitHub repo created and pushed successfully: ${createRepoResult.clone_url}`);
+                      } else {
+                        alert("Failed to create GitHub repo: " + createRepoResult.error);
+                      }
+                      return;
+                    }
+                  }
+
+                  if (result.canConfigureDeploy) {
+                    setDeploySubPath(".");
+                    setDeployProjectType("node");
+                    setShowDeployConfigModal(true);
+                    return;
+                  }
+
+                  alert("Deployment failed: " + result.error);
+                }
               }} title="Deploy Project"
             >
               🚀
@@ -1353,6 +1418,57 @@ const handleRunFile = async (filePath: string | null) => {
         fileTree={fileTree}
         folderPath={folderPath}
       />
+
+      {showDeployConfigModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-lg border border-gray-700 bg-[#111] p-5 text-white">
+            <h3 className="text-lg font-semibold">Configure Deployment</h3>
+            <p className="mt-1 text-sm text-gray-300">
+              Choose a folder path (relative to current root) and project type.
+            </p>
+
+            <div className="mt-4">
+              <label className="mb-1 block text-sm text-gray-300">Deploy Path</label>
+              <input
+                value={deploySubPath}
+                onChange={(e) => setDeploySubPath(e.target.value)}
+                placeholder="."
+                className="w-full rounded-md border border-gray-600 bg-black px-3 py-2 text-sm outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="mt-3">
+              <label className="mb-1 block text-sm text-gray-300">Project Type</label>
+              <select
+                value={deployProjectType}
+                onChange={(e) => setDeployProjectType(e.target.value as "node" | "react" | "next")}
+                className="w-full rounded-md border border-gray-600 bg-black px-3 py-2 text-sm outline-none focus:border-blue-500"
+              >
+                <option value="node">Node</option>
+                <option value="react">React</option>
+                <option value="next">Next</option>
+              </select>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setShowDeployConfigModal(false)}
+                disabled={isSubmittingDeployConfig}
+                className="rounded-md border border-gray-500 px-3 py-2 text-sm hover:bg-gray-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeployConfigurationSubmit}
+                disabled={isSubmittingDeployConfig}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm hover:bg-blue-500 disabled:opacity-50"
+              >
+                {isSubmittingDeployConfig ? "Saving..." : "Save & Continue"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

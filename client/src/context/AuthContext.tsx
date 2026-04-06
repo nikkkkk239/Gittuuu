@@ -9,11 +9,13 @@ import {
   signInWithPopup,
   onAuthStateChanged,
   signOut,
+  GithubAuthProvider,
   User,
 } from 'firebase/auth';
 
 interface AuthContextType {
   user: User | null;
+  githubAccessToken: string | null;
   login: () => Promise<void>;
   logout: () => Promise<void>;
   loading : boolean;
@@ -23,9 +25,15 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [githubAccessToken, setGithubAccessToken] = useState<string | null>(null);
   const [loading , setLoading] = useState(true);
 
   useEffect(() => {
+    const savedGitHubToken = localStorage.getItem("githubAccessToken");
+    if (savedGitHubToken) {
+      setGithubAccessToken(savedGitHubToken);
+    }
+
     onAuthStateChanged(auth, (user) => {
       setUser(user);
       setLoading(false)
@@ -35,15 +43,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async () => {
     await setPersistence(auth, browserLocalPersistence);
-    await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, provider);
+    const credential = GithubAuthProvider.credentialFromResult(result);
+    const accessToken = credential?.accessToken || null;
+
+    setGithubAccessToken(accessToken);
+    if (accessToken) {
+      localStorage.setItem("githubAccessToken", accessToken);
+    }
   };
 
   const logout = async () => {
     await signOut(auth);
+    setGithubAccessToken(null);
+    localStorage.removeItem("githubAccessToken");
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout ,loading}}>
+    <AuthContext.Provider value={{ user, githubAccessToken, login, logout ,loading}}>
       {children}
     </AuthContext.Provider>
   );

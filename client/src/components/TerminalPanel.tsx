@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
+import { WebLinksAddon } from "xterm-addon-web-links";
 import "xterm/css/xterm.css";
 import { X } from "lucide-react";
 
@@ -13,6 +14,7 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ initialCwd, onClose }) =>
   const terminalRef = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal>();
   const fitAddon = useRef<FitAddon | null>(null);
+  const webLinksAddon = useRef<WebLinksAddon | null>(null);
   const terminalIdRef = useRef<number | null>(null);
   const [currentCwd, setCurrentCwd] = useState<string>("");
   const commandBuffer = useRef<string>("");
@@ -40,6 +42,10 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ initialCwd, onClose }) =>
 
     // Create new FitAddon instance for this mount
     fitAddon.current = new FitAddon();
+    webLinksAddon.current = new WebLinksAddon((event, uri) => {
+      event.preventDefault();
+      window.electronAPI.openExternal(uri);
+    });
 
     // Initialize xterm
     term.current = new Terminal({
@@ -72,6 +78,9 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ initialCwd, onClose }) =>
 
     if (fitAddon.current) {
       term.current.loadAddon(fitAddon.current);
+    }
+    if (webLinksAddon.current) {
+      term.current.loadAddon(webLinksAddon.current);
     }
     term.current.open(terminalRef.current);
     
@@ -363,6 +372,7 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ initialCwd, onClose }) =>
       window.removeEventListener("resize", handleResize);
       isInitialized.current = false;
       fitAddon.current = null;
+      webLinksAddon.current = null;
       terminalIdRef.current = null;
     };
   }, []);

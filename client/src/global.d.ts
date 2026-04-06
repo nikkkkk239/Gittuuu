@@ -22,10 +22,31 @@ declare global {
       runFile: (filePath: string) => Promise<string>;
       runHtml: (filePath: string) => Promise<string>;
       openInBrowser: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+      openExternal: (targetUrl: string) => Promise<{ success: boolean; error?: string }>;
       watchDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
       stopWatching: (dirPath: string) => Promise<{ success: boolean }>;
       onDirectoryChanged: (callback: (dirPath: string) => void) => () => void;
-      deployProject: (projectPath: string) => Promise<{ success: boolean; url?: string; error?: string }>;
+      deployProject: (
+        projectPath: string,
+        deploymentOptions?: {
+          createRepoIfMissing?: boolean;
+          githubAccessToken?: string;
+          configureExistingRepo?: boolean;
+          deploySubPath?: string;
+          projectType?: "node" | "react" | "next";
+        }
+      ) => Promise<{
+        success: boolean;
+        url?: string;
+        error?: string;
+        canCreateRepo?: boolean;
+        createdRepo?: boolean;
+        clone_url?: string;
+        canConfigureDeploy?: boolean;
+        configuredDeploy?: boolean;
+        deployPath?: string;
+        projectType?: string;
+      }>;
     };
   }
 }
