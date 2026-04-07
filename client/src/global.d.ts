@@ -46,6 +46,14 @@ declare global {
         configuredDeploy?: boolean;
         deployPath?: string;
         projectType?: string;
+        workflowPath?: string;
+        commitHash?: string;
+        commitBranch?: string;
+        commitSkipped?: boolean;
+        commitMessage?: string;
+        cloudflareTunnel?: unknown;
+        githubSecretConfigured?: boolean;
+        githubSecretName?: string;
       }>;
     };
   }

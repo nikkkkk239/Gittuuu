@@ -274,11 +274,20 @@ const HomePage: React.FC = () => {
         configureExistingRepo: true,
         deploySubPath: deploySubPath.trim() || ".",
         projectType: deployProjectType,
+        githubAccessToken: githubAccessToken ?? undefined,
       });
 
       if (configuredDeployResult.success) {
         alert(
-          `Deploy config saved. Path: ${configuredDeployResult.deployPath}, Type: ${configuredDeployResult.projectType}`
+          configuredDeployResult.commitHash
+            ? `Workflow created, committed, and pushed. Commit: ${configuredDeployResult.commitHash} (branch: ${configuredDeployResult.commitBranch || "main"})`
+            : configuredDeployResult.commitSkipped
+              ? configuredDeployResult.commitMessage || "Workflow already up to date. No commit was needed."
+            : configuredDeployResult.workflowPath
+              ? `GitHub Actions workflow created at: ${configuredDeployResult.workflowPath}`
+            : configuredDeployResult.url
+              ? `Deployed! Visit: ${configuredDeployResult.url}`
+              : `Deployment configuration saved. Path: ${configuredDeployResult.deployPath}, Type: ${configuredDeployResult.projectType}`
         );
         setShowDeployConfigModal(false);
       } else {
@@ -1463,7 +1472,7 @@ const handleRunFile = async (filePath: string | null) => {
                 disabled={isSubmittingDeployConfig}
                 className="rounded-md bg-blue-600 px-3 py-2 text-sm hover:bg-blue-500 disabled:opacity-50"
               >
-                {isSubmittingDeployConfig ? "Saving..." : "Save & Continue"}
+                {isSubmittingDeployConfig ? "Deploying..." : " Continue"}
               </button>
             </div>
           </div>

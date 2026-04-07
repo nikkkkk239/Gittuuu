@@ -7,6 +7,7 @@ import FormData from "form-data"
 import { spawn,execSync } from "child_process";
 import archiver from 'archiver';
 import axios from 'axios';
+import sodium from "libsodium-wrappers-sumo";
 
 // Removed screen recording permission request as it's not needed
 
@@ -29,6 +30,320 @@ function isGitRepository(projectPath) {
   } catch {
     return false;
   }
+}
+
+function normalizeDeploySubPath(deploySubPath) {
+  const rawSubPath = (deploySubPath || ".").trim();
+  return rawSubPath === "." || rawSubPath === "" ? "." : rawSubPath.replace(/^[\\/]+/, "");
+}
+
+function getWorkflowJobName(subPath) {
+  if (subPath === ".") {
+    return "root";
+  }
+
+  return subPath
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "job";
+}
+
+function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType) {
+  const buildStepsByType = {
+    node: [
+      "      - name: Install dependencies",
+      "        run: npm ci",
+      "      - name: Build project",
+      "        run: npm run build --if-present",
+      "      - name: Start app smoke check",
+      "        run: npm run start --if-present"
+    ],
+    react: [
+      "      - name: Install dependencies",
+      "        run: npm ci",
+      "      - name: Build React app",
+      "        run: npm run build",
+      "      - name: Archive build output",
+      "        uses: actions/upload-artifact@v4",
+      "        with:",
+      "          name: react-build",
+      "          path: build"
+    ],
+    next: [
+      "      - name: Install dependencies",
+      "        run: npm ci",
+      "      - name: Build Next.js app",
+      "        run: npm run build",
+      "      - name: Upload Next.js build",
+      "        uses: actions/upload-artifact@v4",
+      "        with:",
+      "          name: next-build",
+      "          path: .next"
+    ]
+  };
+
+  const workingDirectory = normalizedWorkflowPath === "." ? "." : normalizedWorkflowPath;
+
+  return [
+    `  ${jobName}:`,
+    "    runs-on: ubuntu-latest",
+    "    defaults:",
+    "      run:",
+    `        working-directory: ${workingDirectory}`,
+    "    steps:",
+    "      - name: Checkout",
+    "        uses: actions/checkout@v4",
+    "      - name: Setup Node",
+    "        uses: actions/setup-node@v4",
+    "        with:",
+    "          node-version: 20",
+    "          cache: npm",
+    ...buildStepsByType[normalizedProjectType],
+    "      - name: Mark subrepo deployment complete",
+    "        run: echo 'Subrepo deployment workflow executed successfully.'"
+  ].join("\n");
+}
+
+function updateWorkflowContent(existingContent, workflowPathFilter, jobBlock) {
+  if (!existingContent || !existingContent.trim()) {
+    return [
+      "name: Subrepo Deploy",
+      "",
+      "on:",
+      "  push:",
+      "    branches:",
+      "      - main",
+      "    paths:",
+      `      - '${workflowPathFilter}'`,
+      "      - '.github/workflows/deploy.yml'",
+      "  workflow_dispatch:",
+      "",
+      "jobs:",
+      jobBlock,
+      ""
+    ].join("\n");
+  }
+
+  let updatedContent = existingContent;
+
+  if (!updatedContent.includes(workflowPathFilter)) {
+    updatedContent = updatedContent.replace(
+      /(^\s+paths:\n(?:\s+- .+\n)*)/m,
+      `$1      - '${workflowPathFilter}'\n`
+    );
+  }
+
+  const jobNameMatch = jobBlock.match(/^  ([a-zA-Z0-9_-]+):/m);
+  const jobName = jobNameMatch ? jobNameMatch[1] : null;
+  if (jobName && updatedContent.includes(`  ${jobName}:`)) {
+    return updatedContent;
+  }
+
+  if (updatedContent.includes("jobs:\n")) {
+    return updatedContent.replace(/\n?$/, "\n") + `\n${jobBlock}\n`;
+  }
+
+  return `${updatedContent}\n\njobs:\n${jobBlock}\n`;
+}
+
+const CLOUDFLARE_ACCOUNT_ID = "dabe5e4f6f8bc8aad260688346ee8999";
+const CLOUDFLARE_API_TOKEN = "cfut_zrEJoFFr6h7Ro4nCPjD7QqsCVuI3HqYE2hLaeCGK9bc698f3";
+
+function parseGitHubRemoteUrl(remoteUrl) {
+  if (!remoteUrl) {
+    return null;
+  }
+
+  const normalizedUrl = remoteUrl.replace(/\.git$/, "");
+  const sshMatch = normalizedUrl.match(/^git@github\.com:([^/]+)\/([^/]+)$/);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2] };
+  }
+
+  const httpsMatch = normalizedUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  }
+
+  return null;
+}
+
+async function getGitHubRepoInfo(projectPath) {
+  const git = simpleGit(projectPath);
+  const remotes = await git.getRemotes(true);
+  const origin = remotes.find((remote) => remote.name === "origin");
+  return parseGitHubRemoteUrl(origin?.refs?.push || origin?.refs?.fetch || origin?.refs?.url);
+}
+
+async function getGitHubActionsPublicKey(owner, repo, githubAccessToken) {
+  const response = await axios.get(
+    `https://api.github.com/repos/${owner}/${repo}/actions/secrets/public-key`,
+    {
+      headers: {
+        Authorization: `Bearer ${githubAccessToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    }
+  );
+
+  return {
+    keyId: response.data?.key_id,
+    key: response.data?.key
+  };
+}
+
+async function encryptForGitHubSecret(secretValue, githubPublicKey) {
+  await sodium.ready;
+  const publicKeyBytes = sodium.from_base64(githubPublicKey, sodium.base64_variants.ORIGINAL);
+  const messageBytes = sodium.from_string(secretValue);
+  const encryptedBytes = sodium.crypto_box_seal(messageBytes, publicKeyBytes);
+  return sodium.to_base64(encryptedBytes, sodium.base64_variants.ORIGINAL);
+}
+
+async function uploadGitHubSecret(owner, repo, secretName, encryptedValue, keyId, githubAccessToken) {
+  await axios.put(
+    `https://api.github.com/repos/${owner}/${repo}/actions/secrets/${encodeURIComponent(secretName)}`,
+    {
+      encrypted_value: encryptedValue,
+      key_id: keyId
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${githubAccessToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    }
+  );
+}
+
+async function saveCloudflareTunnelTokenSecret(projectPath, githubAccessToken, tunnelToken) {
+  if (!githubAccessToken) {
+    return {
+      success: false,
+      error: "GitHub access token is required to upload encrypted repository secrets."
+    };
+  }
+
+  if (!tunnelToken) {
+    return {
+      success: false,
+      error: "Cloudflare tunnel token not found in API response."
+    };
+  }
+
+  const repoInfo = await getGitHubRepoInfo(projectPath);
+  if (!repoInfo) {
+    return {
+      success: false,
+      error: "Could not determine GitHub repository from origin remote."
+    };
+  }
+
+  const publicKey = await getGitHubActionsPublicKey(repoInfo.owner, repoInfo.repo, githubAccessToken);
+  if (!publicKey?.key || !publicKey?.keyId) {
+    return {
+      success: false,
+      error: "Failed to fetch GitHub repository public key for Actions secrets."
+    };
+  }
+
+  const encryptedValue = await encryptForGitHubSecret(tunnelToken, publicKey.key);
+  await uploadGitHubSecret(
+    repoInfo.owner,
+    repoInfo.repo,
+    "CLOUDFLARE_TUNNEL_TOKEN",
+    encryptedValue,
+    publicKey.keyId,
+    githubAccessToken
+  );
+
+  return {
+    success: true,
+    secretName: "CLOUDFLARE_TUNNEL_TOKEN",
+    keyId: publicKey.keyId
+  };
+}
+
+async function commitWorkflowWithGit(projectPath, workflowFilePath) {
+  const git = simpleGit(projectPath);
+  const repoFilePath = path.relative(projectPath, workflowFilePath).replace(/\\/g, "/");
+
+  const remotes = await git.getRemotes(true);
+  const hasOrigin = remotes.some((remote) => remote.name === "origin");
+  if (!hasOrigin) {
+    return {
+      success: false,
+      error: "Git remote 'origin' is not configured. Please add origin before deploying."
+    };
+  }
+
+  await git.add(repoFilePath);
+
+  const status = await git.status();
+  const hasStagedChanges = Array.isArray(status.staged) && status.staged.length > 0;
+
+  let branchName = "main";
+  try {
+    const currentBranch = await git.revparse(["--abbrev-ref", "HEAD"]);
+    if (currentBranch && currentBranch.trim() && currentBranch.trim() !== "HEAD") {
+      branchName = currentBranch.trim();
+    }
+  } catch {
+    // Keep fallback branch name when HEAD is detached or cannot be resolved.
+  }
+
+  if (!hasStagedChanges) {
+    return {
+      success: true,
+      skipped: true,
+      message: "No workflow changes to commit.",
+      branch: branchName
+    };
+  }
+
+  const commitSummary = await git.commit(`Add deployment workflow for ${repoFilePath}`);
+  try {
+    await git.raw(["push", "-u", "origin", branchName]);
+  } catch (pushError) {
+    return {
+      success: false,
+      error: pushError.message || "Failed to push workflow commit to origin.",
+      commitHash: commitSummary.commit,
+      branch: branchName
+    };
+  }
+
+  return {
+    success: true,
+    commitHash: commitSummary.commit,
+    branch: branchName,
+    skipped: false
+  };
+}
+
+async function createCloudflareTunnel(tunnelName) {
+  const response = await axios.post(
+    `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel`,
+    {
+      name: tunnelName
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  console.log("Cloudflare tunnel create response:", response.data);
+
+  return {
+    success: true,
+    response: response.data
+  };
 }
 
 
@@ -130,8 +445,8 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
     }
 
     const rootPath = path.resolve(projectPath);
-    const requestedSubPath = (deploySubPath || ".").trim() || ".";
-    const resolvedDeployPath = path.resolve(rootPath, requestedSubPath);
+    const normalizedInputSubPath = normalizeDeploySubPath(deploySubPath);
+    const resolvedDeployPath = path.resolve(rootPath, normalizedInputSubPath);
 
     if (resolvedDeployPath !== rootPath && !resolvedDeployPath.startsWith(`${rootPath}${path.sep}`)) {
       return {
@@ -147,11 +462,74 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       };
     }
 
+    const workflowsDir = path.join(rootPath, ".github", "workflows");
+    fs.mkdirSync(workflowsDir, { recursive: true });
+
+    const workflowFilePath = path.join(workflowsDir, "deploy.yml");
+
+    const normalizedWorkflowPath = normalizedInputSubPath === "." ? "." : normalizedInputSubPath.replace(/\\/g, "/");
+    const workflowPathFilter = normalizedWorkflowPath === "." ? "**" : `${normalizedWorkflowPath}/**`;
+    const jobName = getWorkflowJobName(normalizedInputSubPath);
+    const jobBlock = buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType);
+    const existingWorkflowContent = fs.existsSync(workflowFilePath)
+      ? fs.readFileSync(workflowFilePath, "utf-8")
+      : "";
+    const workflowContent = updateWorkflowContent(existingWorkflowContent, workflowPathFilter, jobBlock);
+
+    fs.writeFileSync(workflowFilePath, workflowContent.trimEnd() + "\n", "utf-8");
+
+    const commitResult = await commitWorkflowWithGit(rootPath, workflowFilePath);
+
+    if (!commitResult.success) {
+      return {
+        success: false,
+        error: commitResult.error,
+        workflowPath: workflowFilePath,
+        configuredDeploy: true,
+        deployPath: resolvedDeployPath,
+        projectType: normalizedProjectType
+      };
+    }
+
+    const tunnelName = `${path.basename(rootPath)}-${jobName}`;
+    const tunnelResult = await createCloudflareTunnel(tunnelName);
+    const tunnelToken =
+      tunnelResult?.response?.result?.tunnel_token ||
+      tunnelResult?.response?.result?.token ||
+      tunnelResult?.response?.result?.credentials?.tunnel_token ||
+      "";
+
+    const secretUploadResult = await saveCloudflareTunnelTokenSecret(
+      rootPath,
+      githubAccessToken,
+      tunnelToken
+    );
+
+    if (!secretUploadResult.success) {
+      return {
+        success: false,
+        error: secretUploadResult.error,
+        workflowPath: workflowFilePath,
+        configuredDeploy: true,
+        deployPath: resolvedDeployPath,
+        projectType: normalizedProjectType,
+        cloudflareTunnel: tunnelResult.response
+      };
+    }
+
     return {
       success: true,
       configuredDeploy: true,
       deployPath: resolvedDeployPath,
-      projectType: normalizedProjectType
+      projectType: normalizedProjectType,
+      workflowPath: workflowFilePath,
+      commitHash: commitResult.commitHash,
+      commitBranch: commitResult.branch,
+      commitSkipped: commitResult.skipped,
+      commitMessage: commitResult.message,
+      cloudflareTunnel: tunnelResult.response,
+      githubSecretConfigured: true,
+      githubSecretName: secretUploadResult.secretName
     };
   } catch (error) {
     console.error("Error deploying project:", error);
