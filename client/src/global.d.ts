@@ -62,6 +62,7 @@ declare global {
         deploymentRunLogsUrl?: string;
         deploymentTryCloudflareUrl?: string;
         deploymentResolvedUrl?: string;
+        deploymentPreviewReady?: boolean;
         deploymentLogsSnippet?: string;
       }>;
     };

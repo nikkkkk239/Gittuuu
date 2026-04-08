@@ -70,15 +70,50 @@ function getLockFileInfoForSubPath(rootPath, normalizedWorkflowPath) {
   };
 }
 
+function getPreviewServerConfig(normalizedProjectType) {
+  switch (normalizedProjectType) {
+    case "react":
+      return {
+        previewPort: 4173,
+        previewSteps: [
+          "      - name: Start React preview server",
+          "        run: |",
+          "          npx serve -s dist -l 4173 > /tmp/react-preview.log 2>&1 &",
+          "          sleep 5"
+        ]
+      };
+    case "next":
+      return {
+        previewPort: 3000,
+        previewSteps: [
+          "      - name: Start Next.js preview server",
+          "        run: |",
+          "          npx next start -p 3000 > /tmp/next-preview.log 2>&1 &",
+          "          sleep 5"
+        ]
+      };
+    default:
+      return {
+        previewPort: 3000,
+        previewSteps: [
+          "      - name: Start Node preview server",
+          "        env:",
+          "          PORT: 3000",
+          "        run: |",
+          "          npm run start --if-present > /tmp/node-preview.log 2>&1 &",
+          "          sleep 5"
+        ]
+      };
+  }
+}
+
 function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType, lockFileRelativePath) {
   const buildStepsByType = {
     node: [
       "      - name: Install dependencies",
       "        run: npm ci",
       "      - name: Build project",
-      "        run: npm run build --if-present",
-      "      - name: Start app smoke check",
-      "        run: npm run start --if-present"
+      "        run: npm run build --if-present"
     ],
     react: [
       "      - name: Install dependencies",
@@ -105,6 +140,7 @@ function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType
   };
 
   const workingDirectory = normalizedWorkflowPath === "." ? "." : normalizedWorkflowPath;
+  const previewServerConfig = getPreviewServerConfig(normalizedProjectType);
 
   return [
     `  ${jobName}:`,
@@ -122,14 +158,13 @@ function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType
     "          cache: npm",
     `          cache-dependency-path: ${lockFileRelativePath}`,
     ...buildStepsByType[normalizedProjectType],
+    ...previewServerConfig.previewSteps,
     "      - name: Install cloudflared",
     "        run: |",
     "          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb",
     "          sudo dpkg -i cloudflared.deb",
-    "      - name: Start Cloudflare tunnel",
-    "        env:",
-    "          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}",
-    "        run: cloudflared tunnel run --token \"$TUNNEL_TOKEN\"",
+    "      - name: Start temporary Cloudflare tunnel",
+    "        run: cloudflared tunnel --url http://127.0.0.1:" + previewServerConfig.previewPort,
     "      - name: Mark subrepo deployment complete",
     "        run: echo 'Subrepo deployment workflow executed successfully.'"
   ].join("\n");
@@ -184,9 +219,6 @@ function updateWorkflowContent(existingContent, workflowPathFilter, jobBlock) {
 
   return `${updatedContent}\n\njobs:\n${jobBlock}\n`;
 }
-
-const CLOUDFLARE_ACCOUNT_ID = "dabe5e4f6f8bc8aad260688346ee8999";
-const CLOUDFLARE_API_TOKEN = "cfut_zrEJoFFr6h7Ro4nCPjD7QqsCVuI3HqYE2hLaeCGK9bc698f3";
 
 function parseGitHubRemoteUrl(remoteUrl) {
   if (!remoteUrl) {
@@ -257,54 +289,6 @@ async function uploadGitHubSecret(owner, repo, secretName, encryptedValue, keyId
   );
 }
 
-async function saveCloudflareTunnelTokenSecret(projectPath, githubAccessToken, tunnelToken) {
-  if (!githubAccessToken) {
-    return {
-      success: false,
-      error: "GitHub access token is required to upload encrypted repository secrets."
-    };
-  }
-
-  if (!tunnelToken) {
-    return {
-      success: false,
-      error: "Cloudflare tunnel token not found in API response."
-    };
-  }
-
-  const repoInfo = await getGitHubRepoInfo(projectPath);
-  if (!repoInfo) {
-    return {
-      success: false,
-      error: "Could not determine GitHub repository from origin remote."
-    };
-  }
-
-  const publicKey = await getGitHubActionsPublicKey(repoInfo.owner, repoInfo.repo, githubAccessToken);
-  if (!publicKey?.key || !publicKey?.keyId) {
-    return {
-      success: false,
-      error: "Failed to fetch GitHub repository public key for Actions secrets."
-    };
-  }
-
-  const encryptedValue = await encryptForGitHubSecret(tunnelToken, publicKey.key);
-  await uploadGitHubSecret(
-    repoInfo.owner,
-    repoInfo.repo,
-    "CLOUDFLARE_TUNNEL_TOKEN",
-    encryptedValue,
-    publicKey.keyId,
-    githubAccessToken
-  );
-
-  return {
-    success: true,
-    secretName: "CLOUDFLARE_TUNNEL_TOKEN",
-    keyId: publicKey.keyId
-  };
-}
-
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -363,6 +347,38 @@ async function fetchWorkflowRunById(owner, repo, runId, githubAccessToken) {
   return response.data;
 }
 
+async function fetchWorkflowRuns(owner, repo, githubAccessToken, perPage = 20) {
+  const response = await axios.get(
+    `https://api.github.com/repos/${owner}/${repo}/actions/workflows/deploy.yml/runs`,
+    {
+      headers: {
+        Authorization: `Bearer ${githubAccessToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      params: {
+        per_page: perPage
+      }
+    }
+  );
+
+  return Array.isArray(response.data?.workflow_runs) ? response.data.workflow_runs : [];
+}
+
+async function waitForRunForCommit(owner, repo, commitHash, githubAccessToken, maxAttempts = 20, delayMs = 3000) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const runs = await fetchWorkflowRuns(owner, repo, githubAccessToken, 30);
+    const matchedRun = runs.find((run) => run.head_sha === commitHash) || null;
+    if (matchedRun) {
+      return matchedRun;
+    }
+
+    await delay(delayMs);
+  }
+
+  return null;
+}
+
 async function waitForWorkflowCompletion(owner, repo, runId, githubAccessToken, maxAttempts = 10, delayMs = 3000) {
   let latestRun = null;
 
@@ -394,8 +410,9 @@ async function fetchWorkflowRunLogs(owner, repo, runId, githubAccessToken) {
   const zip = new AdmZip(Buffer.from(response.data));
   const entries = zip.getEntries();
   let tryCloudflareUrl = null;
-  let deploymentUrl = null;
   let combinedLogs = "";
+  let tunnelStepSeen = false;
+  let tunnelStepLogs = "";
 
   for (const entry of entries) {
     if (entry.isDirectory) {
@@ -404,18 +421,76 @@ async function fetchWorkflowRunLogs(owner, repo, runId, githubAccessToken) {
 
     const logText = entry.getData().toString("utf-8");
     combinedLogs += `${logText}\n`;
-    if (!tryCloudflareUrl) {
-      tryCloudflareUrl = extractTryCloudflareUrlFromText(logText);
-    }
-    if (!deploymentUrl) {
-      deploymentUrl = extractDeploymentUrlFromText(logText);
+
+    const entryName = String(entry.entryName || "").toLowerCase();
+    const lowerLogText = logText.toLowerCase();
+    const isTunnelStepLog =
+      entryName.includes("start temporary cloudflare tunnel") ||
+      lowerLogText.includes("run cloudflared tunnel --url");
+
+    if (isTunnelStepLog) {
+      tunnelStepSeen = true;
+      tunnelStepLogs += `${logText}\n`;
+
+      if (!tryCloudflareUrl) {
+        tryCloudflareUrl = extractTryCloudflareUrlFromText(logText);
+      }
     }
   }
 
   return {
     tryCloudflareUrl,
-    deploymentUrl,
-    logsSnippet: combinedLogs.slice(-4000)
+    deploymentUrl: tryCloudflareUrl,
+    tunnelStepSeen,
+    logsSnippet: (tunnelStepSeen ? tunnelStepLogs : combinedLogs).slice(-4000)
+  };
+}
+
+async function waitForPreviewTunnelDetails(owner, repo, runId, githubAccessToken, maxAttempts = 12, delayMs = 2000) {
+  let latestRun = null;
+  let latestLogs = {
+    tryCloudflareUrl: null,
+    deploymentUrl: null,
+    tunnelStepSeen: false,
+    logsSnippet: ""
+  };
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      latestRun = await fetchWorkflowRunById(owner, repo, runId, githubAccessToken);
+    } catch {
+      // Keep polling logs even if the workflow run status endpoint is briefly unavailable.
+    }
+
+    try {
+      latestLogs = await fetchWorkflowRunLogs(owner, repo, runId, githubAccessToken);
+    } catch (error) {
+      latestLogs = {
+        tryCloudflareUrl: null,
+        deploymentUrl: null,
+        logsSnippet: `Unable to fetch logs yet: ${error.message || "Unknown error"}`
+      };
+    }
+
+    if (latestLogs.tryCloudflareUrl || latestLogs.deploymentUrl) {
+      return {
+        run: latestRun,
+        logs: latestLogs,
+        previewReady: true
+      };
+    }
+
+    if (!latestLogs.tunnelStepSeen) {
+      latestLogs.logsSnippet = "Waiting for 'Start temporary Cloudflare tunnel' step logs...";
+    }
+
+    await delay(delayMs);
+  }
+
+  return {
+    run: latestRun,
+    logs: latestLogs,
+    previewReady: false
   };
 }
 
@@ -435,71 +510,39 @@ async function getLatestDeploymentRunSummary(projectPath, githubAccessToken, com
     };
   }
 
-  const runsResponse = await axios.get(
-    `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/actions/workflows/deploy.yml/runs`,
-    {
-      headers: {
-        Authorization: `Bearer ${githubAccessToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-      },
-      params: {
-        per_page: 20
-      }
-    }
+  if (!commitHash) {
+    return {
+      runFound: false,
+      note: "No commit hash available for deploy run matching."
+    };
+  }
+
+  const selectedRun = await waitForRunForCommit(
+    repoInfo.owner,
+    repoInfo.repo,
+    commitHash,
+    githubAccessToken
   );
-
-  const runs = Array.isArray(runsResponse.data?.workflow_runs)
-    ? runsResponse.data.workflow_runs
-    : [];
-
-  let selectedRun = null;
-  if (commitHash) {
-    selectedRun = runs.find((run) => run.head_sha === commitHash) || null;
-  }
-  if (!selectedRun) {
-    selectedRun = runs[0] || null;
-  }
 
   if (!selectedRun) {
     return {
       runFound: false,
-      note: "No GitHub Actions run found for deploy workflow yet."
+      note: "No GitHub Actions run found yet for the current commit."
     };
   }
 
-  const settledRun = await waitForWorkflowCompletion(
-    repoInfo.owner,
-    repoInfo.repo,
-    selectedRun.id,
-    githubAccessToken
-  );
-
   const summary = {
     runFound: true,
-    runId: settledRun?.id || selectedRun.id,
-    runStatus: settledRun?.status || selectedRun.status,
-    runConclusion: settledRun?.conclusion || selectedRun.conclusion,
-    runUrl: settledRun?.html_url || selectedRun.html_url,
-    logsUrl: settledRun?.logs_url || selectedRun.logs_url,
+    runId: selectedRun.id,
+    runStatus: selectedRun.status,
+    runConclusion: selectedRun.conclusion,
+    runUrl: selectedRun.html_url,
+    logsUrl: selectedRun.logs_url,
     tryCloudflareUrl: null,
     deploymentUrl: null,
-    logsSnippet: ""
+    logsSnippet: "Open the workflow run URL to watch logs and copy the temporary Cloudflare URL.",
+    previewReady: false
   };
-
-  try {
-    const logsResult = await fetchWorkflowRunLogs(
-      repoInfo.owner,
-      repoInfo.repo,
-      selectedRun.id,
-      githubAccessToken
-    );
-    summary.tryCloudflareUrl = logsResult.tryCloudflareUrl;
-    summary.deploymentUrl = logsResult.deploymentUrl;
-    summary.logsSnippet = logsResult.logsSnippet;
-  } catch (error) {
-    summary.logsSnippet = `Unable to fetch logs: ${error.message || "Unknown error"}`;
-  }
 
   return summary;
 }
@@ -533,11 +576,19 @@ async function commitWorkflowWithGit(projectPath, workflowFilePath) {
   }
 
   if (!hasStagedChanges) {
+    let headCommitHash = null;
+    try {
+      headCommitHash = (await git.revparse(["HEAD"])).trim();
+    } catch {
+      headCommitHash = null;
+    }
+
     return {
       success: true,
       skipped: true,
       message: "No workflow changes to commit.",
-      branch: branchName
+      branch: branchName,
+      commitHash: headCommitHash
     };
   }
 
@@ -710,45 +761,6 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
     }
 
     const jobName = getWorkflowJobName(normalizedInputSubPath);
-
-    let tunnelResult;
-    try {
-      const tunnelName = `${path.basename(rootPath)}-${jobName}`;
-      tunnelResult = await createCloudflareTunnel(tunnelName);
-    } catch (tunnelError) {
-      return {
-        success: false,
-        error: tunnelError.message || "Failed to create Cloudflare tunnel.",
-        details: tunnelError.response?.data,
-        configuredDeploy: true,
-        deployPath: resolvedDeployPath,
-        projectType: normalizedProjectType
-      };
-    }
-
-    const tunnelToken =
-      tunnelResult?.response?.result?.tunnel_token ||
-      tunnelResult?.response?.result?.token ||
-      tunnelResult?.response?.result?.credentials?.tunnel_token ||
-      "";
-
-    const secretUploadResult = await saveCloudflareTunnelTokenSecret(
-      rootPath,
-      githubAccessToken,
-      tunnelToken
-    );
-
-    if (!secretUploadResult.success) {
-      return {
-        success: false,
-        error: secretUploadResult.error,
-        configuredDeploy: true,
-        deployPath: resolvedDeployPath,
-        projectType: normalizedProjectType,
-        cloudflareTunnel: tunnelResult.response
-      };
-    }
-
     const workflowsDir = path.join(rootPath, ".github", "workflows");
     fs.mkdirSync(workflowsDir, { recursive: true });
 
@@ -777,10 +789,7 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
         workflowPath: workflowFilePath,
         configuredDeploy: true,
         deployPath: resolvedDeployPath,
-        projectType: normalizedProjectType,
-        cloudflareTunnel: tunnelResult.response,
-        githubSecretConfigured: true,
-        githubSecretName: secretUploadResult.secretName
+        projectType: normalizedProjectType
       };
     }
 
@@ -792,7 +801,8 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       runUrl: null,
       logsUrl: null,
       tryCloudflareUrl: null,
-      logsSnippet: ""
+      logsSnippet: "",
+      previewReady: false
     };
 
     try {
@@ -811,9 +821,6 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       commitBranch: commitResult.branch,
       commitSkipped: commitResult.skipped,
       commitMessage: commitResult.message,
-      cloudflareTunnel: tunnelResult.response,
-      githubSecretConfigured: true,
-      githubSecretName: secretUploadResult.secretName,
       deploymentRunFound: runSummary.runFound,
       deploymentRunId: runSummary.runId,
       deploymentRunStatus: runSummary.runStatus,
@@ -822,6 +829,7 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       deploymentRunLogsUrl: runSummary.logsUrl,
       deploymentTryCloudflareUrl: runSummary.tryCloudflareUrl,
       deploymentResolvedUrl: runSummary.deploymentUrl,
+      deploymentPreviewReady: runSummary.previewReady,
       deploymentLogsSnippet: runSummary.logsSnippet
     };
   } catch (error) {

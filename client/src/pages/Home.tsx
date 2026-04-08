@@ -77,6 +77,7 @@ const HomePage: React.FC = () => {
     runUrl: string;
     logsUrl: string;
     deployedUrl: string;
+    previewReady: boolean;
     logs: string;
   } | null>(null);
   const analyzerRef = React.useRef(new CodeFlowAnalyzer());
@@ -309,32 +310,37 @@ const HomePage: React.FC = () => {
         githubAccessToken: githubAccessToken ?? undefined,
       });
 
-      const deploymentStatusSummary = configuredDeployResult.deploymentRunFound
-        ? `\nRun Status: ${configuredDeployResult.deploymentRunStatus || "unknown"}\nConclusion: ${configuredDeployResult.deploymentRunConclusion || "pending"}\nRun URL: ${configuredDeployResult.deploymentRunUrl || "N/A"}\nLogs URL: ${configuredDeployResult.deploymentRunLogsUrl || "N/A"}${configuredDeployResult.deploymentTryCloudflareUrl ? `\nDetected TryCloudflare URL: ${configuredDeployResult.deploymentTryCloudflareUrl}` : ""}${configuredDeployResult.deploymentLogsSnippet ? `\n\nLogs (tail):\n${configuredDeployResult.deploymentLogsSnippet}` : ""}`
-        : "\nRun Status: No workflow run found yet.";
-
       const resultTitle = configuredDeployResult.success
-        ? configuredDeployResult.commitHash
-          ? `Workflow committed (${configuredDeployResult.commitHash.slice(0, 7)})`
-          : configuredDeployResult.commitSkipped
-            ? (configuredDeployResult.commitMessage || "Workflow already up to date")
-            : "Deployment completed"
+        ? configuredDeployResult.deploymentRunUrl
+          ? "Workflow started. Open the run URL for live logs and tunnel link."
+          : configuredDeployResult.commitHash
+            ? `Workflow committed (${configuredDeployResult.commitHash.slice(0, 7)})`
+            : configuredDeployResult.commitSkipped
+              ? (configuredDeployResult.commitMessage || "Workflow already up to date")
+              : "Deployment request submitted"
         : `Deployment failed: ${configuredDeployResult.error || "Unknown error"}`;
 
       const deployedUrl =
-        configuredDeployResult.deploymentResolvedUrl ||
+        configuredDeployResult.deploymentRunUrl ||
         configuredDeployResult.deploymentTryCloudflareUrl ||
+        configuredDeployResult.deploymentResolvedUrl ||
         configuredDeployResult.url ||
         "Not detected in logs";
+
+      const workflowStatus = configuredDeployResult.deploymentRunStatus ||
+        (configuredDeployResult.deploymentRunFound ? "queued" : (configuredDeployResult.success ? "submitted" : "failed"));
+      const workflowConclusion = configuredDeployResult.deploymentRunConclusion ||
+        (configuredDeployResult.deploymentRunFound ? "pending" : (configuredDeployResult.success ? "submitted" : "failure"));
 
       setDeployResultSummary({
         success: configuredDeployResult.success,
         title: resultTitle,
-        status: configuredDeployResult.deploymentRunStatus || (configuredDeployResult.success ? "completed" : "failed"),
-        conclusion: configuredDeployResult.deploymentRunConclusion || (configuredDeployResult.success ? "success" : "failure"),
+        status: workflowStatus,
+        conclusion: workflowConclusion,
         runUrl: configuredDeployResult.deploymentRunUrl || "N/A",
         logsUrl: configuredDeployResult.deploymentRunLogsUrl || "N/A",
         deployedUrl,
+        previewReady: Boolean(configuredDeployResult.deploymentPreviewReady),
         logs: formatDeploymentLogs(configuredDeployResult.deploymentLogsSnippet),
       });
 
@@ -1554,7 +1560,7 @@ const handleRunFile = async (filePath: string | null) => {
                 <p className="mt-1 font-medium">{deployResultSummary.status}</p>
               </div>
               <div className="rounded-md border border-gray-700 bg-black/40 p-3">
-                <p className="text-gray-400">Deployed URL</p>
+                <p className="text-gray-400">Workflow URL</p>
                 <p className="mt-1 break-all font-medium text-blue-300">{deployResultSummary.deployedUrl}</p>
               </div>
               <div className="rounded-md border border-gray-700 bg-black/40 p-3 md:col-span-2">
