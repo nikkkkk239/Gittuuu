@@ -54,6 +54,15 @@ declare global {
         cloudflareTunnel?: unknown;
         githubSecretConfigured?: boolean;
         githubSecretName?: string;
+        deploymentRunFound?: boolean;
+        deploymentRunId?: number;
+        deploymentRunStatus?: string;
+        deploymentRunConclusion?: string;
+        deploymentRunUrl?: string;
+        deploymentRunLogsUrl?: string;
+        deploymentTryCloudflareUrl?: string;
+        deploymentResolvedUrl?: string;
+        deploymentLogsSnippet?: string;
       }>;
     };
   }

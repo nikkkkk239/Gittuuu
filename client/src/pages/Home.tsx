@@ -68,6 +68,17 @@ const HomePage: React.FC = () => {
   const [deploySubPath, setDeploySubPath] = useState(".");
   const [deployProjectType, setDeployProjectType] = useState<"node" | "react" | "next">("node");
   const [isSubmittingDeployConfig, setIsSubmittingDeployConfig] = useState(false);
+  const [showDeployResultModal, setShowDeployResultModal] = useState(false);
+  const [deployResultSummary, setDeployResultSummary] = useState<{
+    success: boolean;
+    title: string;
+    status: string;
+    conclusion: string;
+    runUrl: string;
+    logsUrl: string;
+    deployedUrl: string;
+    logs: string;
+  } | null>(null);
   const analyzerRef = React.useRef(new CodeFlowAnalyzer());
 
   const [showInput, setShowInput] = useState(false);
@@ -262,6 +273,27 @@ const HomePage: React.FC = () => {
     setFilePath(null);
   };
 
+  const formatDeploymentLogs = (rawLogs?: string): string => {
+    if (!rawLogs?.trim()) {
+      return "No logs available.";
+    }
+
+    return rawLogs
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        const match = line.match(/^(\d{4}-\d{2}-\d{2}T[^\s]+Z)\s+(.*)$/);
+        if (!match) {
+          return line;
+        }
+
+        const [, isoTime, message] = match;
+        const hhmmss = isoTime.slice(11, 19);
+        return `${hhmmss} | ${message}`;
+      })
+      .join("\n");
+  };
+
   const handleDeployConfigurationSubmit = async () => {
     if (!folderPath) {
       alert("Please open a project first!");
@@ -277,21 +309,39 @@ const HomePage: React.FC = () => {
         githubAccessToken: githubAccessToken ?? undefined,
       });
 
+      const deploymentStatusSummary = configuredDeployResult.deploymentRunFound
+        ? `\nRun Status: ${configuredDeployResult.deploymentRunStatus || "unknown"}\nConclusion: ${configuredDeployResult.deploymentRunConclusion || "pending"}\nRun URL: ${configuredDeployResult.deploymentRunUrl || "N/A"}\nLogs URL: ${configuredDeployResult.deploymentRunLogsUrl || "N/A"}${configuredDeployResult.deploymentTryCloudflareUrl ? `\nDetected TryCloudflare URL: ${configuredDeployResult.deploymentTryCloudflareUrl}` : ""}${configuredDeployResult.deploymentLogsSnippet ? `\n\nLogs (tail):\n${configuredDeployResult.deploymentLogsSnippet}` : ""}`
+        : "\nRun Status: No workflow run found yet.";
+
+      const resultTitle = configuredDeployResult.success
+        ? configuredDeployResult.commitHash
+          ? `Workflow committed (${configuredDeployResult.commitHash.slice(0, 7)})`
+          : configuredDeployResult.commitSkipped
+            ? (configuredDeployResult.commitMessage || "Workflow already up to date")
+            : "Deployment completed"
+        : `Deployment failed: ${configuredDeployResult.error || "Unknown error"}`;
+
+      const deployedUrl =
+        configuredDeployResult.deploymentResolvedUrl ||
+        configuredDeployResult.deploymentTryCloudflareUrl ||
+        configuredDeployResult.url ||
+        "Not detected in logs";
+
+      setDeployResultSummary({
+        success: configuredDeployResult.success,
+        title: resultTitle,
+        status: configuredDeployResult.deploymentRunStatus || (configuredDeployResult.success ? "completed" : "failed"),
+        conclusion: configuredDeployResult.deploymentRunConclusion || (configuredDeployResult.success ? "success" : "failure"),
+        runUrl: configuredDeployResult.deploymentRunUrl || "N/A",
+        logsUrl: configuredDeployResult.deploymentRunLogsUrl || "N/A",
+        deployedUrl,
+        logs: formatDeploymentLogs(configuredDeployResult.deploymentLogsSnippet),
+      });
+
+      setShowDeployResultModal(true);
+
       if (configuredDeployResult.success) {
-        alert(
-          configuredDeployResult.commitHash
-            ? `Workflow created, committed, and pushed. Commit: ${configuredDeployResult.commitHash} (branch: ${configuredDeployResult.commitBranch || "main"})`
-            : configuredDeployResult.commitSkipped
-              ? configuredDeployResult.commitMessage || "Workflow already up to date. No commit was needed."
-            : configuredDeployResult.workflowPath
-              ? `GitHub Actions workflow created at: ${configuredDeployResult.workflowPath}`
-            : configuredDeployResult.url
-              ? `Deployed! Visit: ${configuredDeployResult.url}`
-              : `Deployment configuration saved. Path: ${configuredDeployResult.deployPath}, Type: ${configuredDeployResult.projectType}`
-        );
         setShowDeployConfigModal(false);
-      } else {
-        alert("Deployment failed: " + configuredDeployResult.error);
       }
     } finally {
       setIsSubmittingDeployConfig(false);
@@ -1473,6 +1523,63 @@ const handleRunFile = async (filePath: string | null) => {
                 className="rounded-md bg-blue-600 px-3 py-2 text-sm hover:bg-blue-500 disabled:opacity-50"
               >
                 {isSubmittingDeployConfig ? "Deploying..." : " Continue"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeployResultModal && deployResultSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-3xl rounded-lg border border-gray-700 bg-[#0f0f0f] p-5 text-white">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold">Deployment Report</h3>
+                <p className="mt-1 text-sm text-gray-300">{deployResultSummary.title}</p>
+              </div>
+              <div
+                className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                  deployResultSummary.conclusion === "success"
+                    ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
+                    : "border-red-500 bg-red-500/20 text-red-300"
+                }`}
+              >
+                {deployResultSummary.conclusion}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 text-sm text-gray-200 md:grid-cols-2">
+              <div className="rounded-md border border-gray-700 bg-black/40 p-3">
+                <p className="text-gray-400">Run Status</p>
+                <p className="mt-1 font-medium">{deployResultSummary.status}</p>
+              </div>
+              <div className="rounded-md border border-gray-700 bg-black/40 p-3">
+                <p className="text-gray-400">Deployed URL</p>
+                <p className="mt-1 break-all font-medium text-blue-300">{deployResultSummary.deployedUrl}</p>
+              </div>
+              <div className="rounded-md border border-gray-700 bg-black/40 p-3 md:col-span-2">
+                <p className="text-gray-400">Run URL</p>
+                <p className="mt-1 break-all text-blue-300">{deployResultSummary.runUrl}</p>
+              </div>
+              <div className="rounded-md border border-gray-700 bg-black/40 p-3 md:col-span-2">
+                <p className="text-gray-400">Logs URL</p>
+                <p className="mt-1 break-all text-blue-300">{deployResultSummary.logsUrl}</p>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <p className="mb-2 text-sm text-gray-300">Logs (formatted)</p>
+              <pre className="max-h-72 overflow-y-auto rounded-md border border-gray-700 bg-black/70 p-3 text-xs leading-relaxed text-gray-200 whitespace-pre-wrap">
+                {deployResultSummary.logs}
+              </pre>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setShowDeployResultModal(false)}
+                className="rounded-md border border-gray-500 px-4 py-2 text-sm hover:bg-gray-800"
+              >
+                Close
               </button>
             </div>
           </div>

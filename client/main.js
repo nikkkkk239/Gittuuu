@@ -8,6 +8,7 @@ import { spawn,execSync } from "child_process";
 import archiver from 'archiver';
 import axios from 'axios';
 import sodium from "libsodium-wrappers-sumo";
+import AdmZip from "adm-zip";
 
 // Removed screen recording permission request as it's not needed
 
@@ -48,7 +49,28 @@ function getWorkflowJobName(subPath) {
     .toLowerCase() || "job";
 }
 
-function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType) {
+function getLockFileInfoForSubPath(rootPath, normalizedWorkflowPath) {
+  const subPath = normalizedWorkflowPath === "." ? "" : normalizedWorkflowPath;
+  const candidateRelativePaths = [
+    subPath ? `${subPath}/package-lock.json` : "package-lock.json",
+    subPath ? `${subPath}/npm-shrinkwrap.json` : "npm-shrinkwrap.json",
+    subPath ? `${subPath}/yarn.lock` : "yarn.lock",
+    subPath ? `${subPath}/pnpm-lock.yaml` : "pnpm-lock.yaml"
+  ];
+
+  const existingRelativePath = candidateRelativePaths.find((relativePath) => {
+    const absolutePath = path.join(rootPath, relativePath.replace(/\//g, path.sep));
+    return fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile();
+  });
+
+  return {
+    exists: Boolean(existingRelativePath),
+    lockFileRelativePath: existingRelativePath || candidateRelativePaths[0],
+    acceptedRelativePaths: candidateRelativePaths
+  };
+}
+
+function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType, lockFileRelativePath) {
   const buildStepsByType = {
     node: [
       "      - name: Install dependencies",
@@ -67,7 +89,7 @@ function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType
       "        uses: actions/upload-artifact@v4",
       "        with:",
       "          name: react-build",
-      "          path: build"
+      "          path: dist"
     ],
     next: [
       "      - name: Install dependencies",
@@ -98,7 +120,16 @@ function buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType
     "        with:",
     "          node-version: 20",
     "          cache: npm",
+    `          cache-dependency-path: ${lockFileRelativePath}`,
     ...buildStepsByType[normalizedProjectType],
+    "      - name: Install cloudflared",
+    "        run: |",
+    "          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb",
+    "          sudo dpkg -i cloudflared.deb",
+    "      - name: Start Cloudflare tunnel",
+    "        env:",
+    "          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}",
+    "        run: cloudflared tunnel run --token \"$TUNNEL_TOKEN\"",
     "      - name: Mark subrepo deployment complete",
     "        run: echo 'Subrepo deployment workflow executed successfully.'"
   ].join("\n");
@@ -136,6 +167,14 @@ function updateWorkflowContent(existingContent, workflowPathFilter, jobBlock) {
   const jobNameMatch = jobBlock.match(/^  ([a-zA-Z0-9_-]+):/m);
   const jobName = jobNameMatch ? jobNameMatch[1] : null;
   if (jobName && updatedContent.includes(`  ${jobName}:`)) {
+    const jobHeader = `  ${jobName}:`;
+    const startIndex = updatedContent.indexOf(jobHeader);
+    if (startIndex >= 0) {
+      const suffixMatch = updatedContent.slice(startIndex + jobHeader.length).match(/\n  [a-zA-Z0-9_-]+:/);
+      const endIndex = suffixMatch ? startIndex + jobHeader.length + suffixMatch.index : updatedContent.length;
+      return `${updatedContent.slice(0, startIndex)}${jobBlock}${updatedContent.slice(endIndex)}`;
+    }
+
     return updatedContent;
   }
 
@@ -264,6 +303,205 @@ async function saveCloudflareTunnelTokenSecret(projectPath, githubAccessToken, t
     secretName: "CLOUDFLARE_TUNNEL_TOKEN",
     keyId: publicKey.keyId
   };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractTryCloudflareUrlFromText(logText) {
+  const regex = /https:\/\/[^\s"'`]+\.trycloudflare\.com[^\s"'`]*/gi;
+  const match = logText.match(regex);
+  return match && match.length > 0 ? match[0] : null;
+}
+
+function extractDeploymentUrlFromText(logText) {
+  const tryCloudflareUrl = extractTryCloudflareUrlFromText(logText);
+  if (tryCloudflareUrl) {
+    return tryCloudflareUrl;
+  }
+
+  const allUrls = logText.match(/https:\/\/[^\s"'`]+/gi) || [];
+  const ignoredHosts = [
+    "github.com",
+    "api.github.com",
+    "objects.githubusercontent.com",
+    "raw.githubusercontent.com",
+    "actions.githubusercontent.com",
+    "api.cloudflare.com"
+  ];
+
+  for (const rawUrl of allUrls) {
+    const cleanedUrl = rawUrl.replace(/[),.;]+$/, "");
+    try {
+      const parsed = new URL(cleanedUrl);
+      const hostname = parsed.hostname.toLowerCase();
+      const shouldIgnore = ignoredHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+      if (!shouldIgnore) {
+        return cleanedUrl;
+      }
+    } catch {
+      // Ignore malformed URL tokens from logs.
+    }
+  }
+
+  return null;
+}
+
+async function fetchWorkflowRunById(owner, repo, runId, githubAccessToken) {
+  const response = await axios.get(
+    `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${githubAccessToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    }
+  );
+
+  return response.data;
+}
+
+async function waitForWorkflowCompletion(owner, repo, runId, githubAccessToken, maxAttempts = 10, delayMs = 3000) {
+  let latestRun = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    latestRun = await fetchWorkflowRunById(owner, repo, runId, githubAccessToken);
+    if (latestRun?.status === "completed") {
+      return latestRun;
+    }
+
+    await delay(delayMs);
+  }
+
+  return latestRun;
+}
+
+async function fetchWorkflowRunLogs(owner, repo, runId, githubAccessToken) {
+  const response = await axios.get(
+    `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/logs`,
+    {
+      headers: {
+        Authorization: `Bearer ${githubAccessToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      responseType: "arraybuffer"
+    }
+  );
+
+  const zip = new AdmZip(Buffer.from(response.data));
+  const entries = zip.getEntries();
+  let tryCloudflareUrl = null;
+  let deploymentUrl = null;
+  let combinedLogs = "";
+
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      continue;
+    }
+
+    const logText = entry.getData().toString("utf-8");
+    combinedLogs += `${logText}\n`;
+    if (!tryCloudflareUrl) {
+      tryCloudflareUrl = extractTryCloudflareUrlFromText(logText);
+    }
+    if (!deploymentUrl) {
+      deploymentUrl = extractDeploymentUrlFromText(logText);
+    }
+  }
+
+  return {
+    tryCloudflareUrl,
+    deploymentUrl,
+    logsSnippet: combinedLogs.slice(-4000)
+  };
+}
+
+async function getLatestDeploymentRunSummary(projectPath, githubAccessToken, commitHash) {
+  if (!githubAccessToken) {
+    return {
+      runFound: false,
+      note: "GitHub token missing. Skipping Actions run log fetch."
+    };
+  }
+
+  const repoInfo = await getGitHubRepoInfo(projectPath);
+  if (!repoInfo) {
+    return {
+      runFound: false,
+      note: "Could not determine GitHub repo info from git remote."
+    };
+  }
+
+  const runsResponse = await axios.get(
+    `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/actions/workflows/deploy.yml/runs`,
+    {
+      headers: {
+        Authorization: `Bearer ${githubAccessToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      params: {
+        per_page: 20
+      }
+    }
+  );
+
+  const runs = Array.isArray(runsResponse.data?.workflow_runs)
+    ? runsResponse.data.workflow_runs
+    : [];
+
+  let selectedRun = null;
+  if (commitHash) {
+    selectedRun = runs.find((run) => run.head_sha === commitHash) || null;
+  }
+  if (!selectedRun) {
+    selectedRun = runs[0] || null;
+  }
+
+  if (!selectedRun) {
+    return {
+      runFound: false,
+      note: "No GitHub Actions run found for deploy workflow yet."
+    };
+  }
+
+  const settledRun = await waitForWorkflowCompletion(
+    repoInfo.owner,
+    repoInfo.repo,
+    selectedRun.id,
+    githubAccessToken
+  );
+
+  const summary = {
+    runFound: true,
+    runId: settledRun?.id || selectedRun.id,
+    runStatus: settledRun?.status || selectedRun.status,
+    runConclusion: settledRun?.conclusion || selectedRun.conclusion,
+    runUrl: settledRun?.html_url || selectedRun.html_url,
+    logsUrl: settledRun?.logs_url || selectedRun.logs_url,
+    tryCloudflareUrl: null,
+    deploymentUrl: null,
+    logsSnippet: ""
+  };
+
+  try {
+    const logsResult = await fetchWorkflowRunLogs(
+      repoInfo.owner,
+      repoInfo.repo,
+      selectedRun.id,
+      githubAccessToken
+    );
+    summary.tryCloudflareUrl = logsResult.tryCloudflareUrl;
+    summary.deploymentUrl = logsResult.deploymentUrl;
+    summary.logsSnippet = logsResult.logsSnippet;
+  } catch (error) {
+    summary.logsSnippet = `Unable to fetch logs: ${error.message || "Unknown error"}`;
+  }
+
+  return summary;
 }
 
 async function commitWorkflowWithGit(projectPath, workflowFilePath) {
@@ -447,6 +685,7 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
     const rootPath = path.resolve(projectPath);
     const normalizedInputSubPath = normalizeDeploySubPath(deploySubPath);
     const resolvedDeployPath = path.resolve(rootPath, normalizedInputSubPath);
+    const normalizedWorkflowPath = normalizedInputSubPath === "." ? "." : normalizedInputSubPath.replace(/\\/g, "/");
 
     if (resolvedDeployPath !== rootPath && !resolvedDeployPath.startsWith(`${rootPath}${path.sep}`)) {
       return {
@@ -462,37 +701,31 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       };
     }
 
-    const workflowsDir = path.join(rootPath, ".github", "workflows");
-    fs.mkdirSync(workflowsDir, { recursive: true });
-
-    const workflowFilePath = path.join(workflowsDir, "deploy.yml");
-
-    const normalizedWorkflowPath = normalizedInputSubPath === "." ? "." : normalizedInputSubPath.replace(/\\/g, "/");
-    const workflowPathFilter = normalizedWorkflowPath === "." ? "**" : `${normalizedWorkflowPath}/**`;
-    const jobName = getWorkflowJobName(normalizedInputSubPath);
-    const jobBlock = buildWorkflowJob(jobName, normalizedWorkflowPath, normalizedProjectType);
-    const existingWorkflowContent = fs.existsSync(workflowFilePath)
-      ? fs.readFileSync(workflowFilePath, "utf-8")
-      : "";
-    const workflowContent = updateWorkflowContent(existingWorkflowContent, workflowPathFilter, jobBlock);
-
-    fs.writeFileSync(workflowFilePath, workflowContent.trimEnd() + "\n", "utf-8");
-
-    const commitResult = await commitWorkflowWithGit(rootPath, workflowFilePath);
-
-    if (!commitResult.success) {
+    const lockFileInfo = getLockFileInfoForSubPath(rootPath, normalizedWorkflowPath);
+    if (!lockFileInfo.exists) {
       return {
         success: false,
-        error: commitResult.error,
-        workflowPath: workflowFilePath,
+        error: `No lock file found in deploy path '${normalizedWorkflowPath}'. Expected one of: ${lockFileInfo.acceptedRelativePaths.join(", ")}`
+      };
+    }
+
+    const jobName = getWorkflowJobName(normalizedInputSubPath);
+
+    let tunnelResult;
+    try {
+      const tunnelName = `${path.basename(rootPath)}-${jobName}`;
+      tunnelResult = await createCloudflareTunnel(tunnelName);
+    } catch (tunnelError) {
+      return {
+        success: false,
+        error: tunnelError.message || "Failed to create Cloudflare tunnel.",
+        details: tunnelError.response?.data,
         configuredDeploy: true,
         deployPath: resolvedDeployPath,
         projectType: normalizedProjectType
       };
     }
 
-    const tunnelName = `${path.basename(rootPath)}-${jobName}`;
-    const tunnelResult = await createCloudflareTunnel(tunnelName);
     const tunnelToken =
       tunnelResult?.response?.result?.tunnel_token ||
       tunnelResult?.response?.result?.token ||
@@ -509,12 +742,63 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       return {
         success: false,
         error: secretUploadResult.error,
-        workflowPath: workflowFilePath,
         configuredDeploy: true,
         deployPath: resolvedDeployPath,
         projectType: normalizedProjectType,
         cloudflareTunnel: tunnelResult.response
       };
+    }
+
+    const workflowsDir = path.join(rootPath, ".github", "workflows");
+    fs.mkdirSync(workflowsDir, { recursive: true });
+
+    const workflowFilePath = path.join(workflowsDir, "deploy.yml");
+
+    const workflowPathFilter = normalizedWorkflowPath === "." ? "**" : `${normalizedWorkflowPath}/**`;
+    const jobBlock = buildWorkflowJob(
+      jobName,
+      normalizedWorkflowPath,
+      normalizedProjectType,
+      lockFileInfo.lockFileRelativePath
+    );
+    const existingWorkflowContent = fs.existsSync(workflowFilePath)
+      ? fs.readFileSync(workflowFilePath, "utf-8")
+      : "";
+    const workflowContent = updateWorkflowContent(existingWorkflowContent, workflowPathFilter, jobBlock);
+
+    fs.writeFileSync(workflowFilePath, workflowContent.trimEnd() + "\n", "utf-8");
+
+    const commitResult = await commitWorkflowWithGit(rootPath, workflowFilePath);
+
+    if (!commitResult.success) {
+      return {
+        success: false,
+        error: commitResult.error,
+        workflowPath: workflowFilePath,
+        configuredDeploy: true,
+        deployPath: resolvedDeployPath,
+        projectType: normalizedProjectType,
+        cloudflareTunnel: tunnelResult.response,
+        githubSecretConfigured: true,
+        githubSecretName: secretUploadResult.secretName
+      };
+    }
+
+    let runSummary = {
+      runFound: false,
+      runId: null,
+      runStatus: null,
+      runConclusion: null,
+      runUrl: null,
+      logsUrl: null,
+      tryCloudflareUrl: null,
+      logsSnippet: ""
+    };
+
+    try {
+      runSummary = await getLatestDeploymentRunSummary(rootPath, githubAccessToken, commitResult.commitHash);
+    } catch (runError) {
+      runSummary.logsSnippet = `Unable to fetch run summary: ${runError.message || "Unknown error"}`;
     }
 
     return {
@@ -529,7 +813,16 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       commitMessage: commitResult.message,
       cloudflareTunnel: tunnelResult.response,
       githubSecretConfigured: true,
-      githubSecretName: secretUploadResult.secretName
+      githubSecretName: secretUploadResult.secretName,
+      deploymentRunFound: runSummary.runFound,
+      deploymentRunId: runSummary.runId,
+      deploymentRunStatus: runSummary.runStatus,
+      deploymentRunConclusion: runSummary.runConclusion,
+      deploymentRunUrl: runSummary.runUrl,
+      deploymentRunLogsUrl: runSummary.logsUrl,
+      deploymentTryCloudflareUrl: runSummary.tryCloudflareUrl,
+      deploymentResolvedUrl: runSummary.deploymentUrl,
+      deploymentLogsSnippet: runSummary.logsSnippet
     };
   } catch (error) {
     console.error("Error deploying project:", error);
