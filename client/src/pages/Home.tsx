@@ -1,8 +1,7 @@
 import Editor from "@monaco-editor/react";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useFolder } from "../context/FolderContext";
 import { useAuth } from "../context/AuthContext";
-import path from "path";
 import {
   ChevronDown,
   ChevronRight,
@@ -22,6 +21,7 @@ import TerminalPanel from "../components/TerminalPanel";
 import CodeFlowVisualizer from "../components/CodeFlowVisualizer";
 import DrawPanel from "../components/DrawPanel";
 import FlowVisualizationModal from "../components/FlowVisualizationModal";
+import { NodeLogo, NextLogo, NpmLogo, PnpmLogo, ReactLogo, YarnLogo } from "../components/DeploymentBrandIcons";
 import { CodeFlowAnalyzer, CodeFlowGraph } from "../lib/codeFlowAnalyzer";
 
 interface FileItem {
@@ -67,6 +67,7 @@ const HomePage: React.FC = () => {
   const [showDeployConfigModal, setShowDeployConfigModal] = useState(false);
   const [deploySubPath, setDeploySubPath] = useState(".");
   const [deployProjectType, setDeployProjectType] = useState<"node" | "react" | "next">("node");
+  const [deployPackageManager, setDeployPackageManager] = useState<"npm" | "yarn" | "pnpm">("npm");
   const [isSubmittingDeployConfig, setIsSubmittingDeployConfig] = useState(false);
   const [showDeployResultModal, setShowDeployResultModal] = useState(false);
   const [deployResultSummary, setDeployResultSummary] = useState<{
@@ -91,6 +92,63 @@ const HomePage: React.FC = () => {
     type: "file" | "folder";
     item: any | null;
   } | null>(null);
+
+  const deploymentProjectTypeOptions = [
+    { value: "node", label: "Node", description: "Backend / server app", icon: NodeLogo },
+    { value: "react", label: "React", description: "Frontend app", icon: ReactLogo },
+    { value: "next", label: "Next", description: "Full-stack app", icon: NextLogo },
+  ] as const;
+
+  const deploymentPackageManagerOptions = [
+    { value: "npm", label: "npm", description: "Default Node package manager", icon: NpmLogo },
+    { value: "yarn", label: "yarn", description: "Fast classic workspace installs", icon: YarnLogo },
+    { value: "pnpm", label: "pnpm", description: "Strict and space efficient", icon: PnpmLogo },
+  ] as const;
+
+  const deployFolderOptions = useMemo(() => {
+    if (!folderPath) {
+      return [] as Array<{ label: string; value: string }>;
+    }
+
+    const options: Array<{ label: string; value: string }> = [{ label: ". (project root)", value: "." }];
+
+    const walkFolders = (items: FileItem[], prefix: string) => {
+      for (const item of items) {
+        if (!item.isDirectory) {
+          continue;
+        }
+
+        const relativePath = prefix ? `${prefix}/${item.name}` : item.name;
+        options.push({ label: relativePath, value: relativePath });
+
+        if (item.children?.length) {
+          walkFolders(item.children, relativePath);
+        }
+      }
+    };
+
+    walkFolders(fileTree, "");
+    return options;
+  }, [fileTree, folderPath]);
+
+  const resolveDeployPath = (selectedPath: string) => {
+    if (!folderPath) {
+      return null;
+    }
+
+    const normalizedSelection = selectedPath.trim() || ".";
+    const resolvedRoot = folderPath.replace(/[\\/]+$/, "");
+    const resolvedTarget = normalizedSelection === "."
+      ? resolvedRoot
+      : `${resolvedRoot}/${normalizedSelection.replace(/^[\\/]+/, "")}`;
+    const boundary = `${resolvedRoot}/`;
+
+    if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(boundary)) {
+      return null;
+    }
+
+    return resolvedTarget;
+  };
 
   const handleRightClick = (e: React.MouseEvent, item: any) => {
      console.log("Deleting item:", item); 
@@ -303,52 +361,27 @@ const HomePage: React.FC = () => {
 
     setIsSubmittingDeployConfig(true);
     try {
-      const configuredDeployResult = await window.electronAPI.deployProject(folderPath, {
-        configureExistingRepo: true,
-        deploySubPath: deploySubPath.trim() || ".",
-        projectType: deployProjectType,
-        githubAccessToken: githubAccessToken ?? undefined,
-      });
+      const deployPath = resolveDeployPath(deploySubPath);
 
-      const resultTitle = configuredDeployResult.success
-        ? configuredDeployResult.deploymentRunUrl
-          ? "Workflow started. Open the run URL for live logs and tunnel link."
-          : configuredDeployResult.commitHash
-            ? `Workflow committed (${configuredDeployResult.commitHash.slice(0, 7)})`
-            : configuredDeployResult.commitSkipped
-              ? (configuredDeployResult.commitMessage || "Workflow already up to date")
-              : "Deployment request submitted"
-        : `Deployment failed: ${configuredDeployResult.error || "Unknown error"}`;
-
-      const deployedUrl =
-        configuredDeployResult.deploymentRunUrl ||
-        configuredDeployResult.deploymentTryCloudflareUrl ||
-        configuredDeployResult.deploymentResolvedUrl ||
-        configuredDeployResult.url ||
-        "Not detected in logs";
-
-      const workflowStatus = configuredDeployResult.deploymentRunStatus ||
-        (configuredDeployResult.deploymentRunFound ? "queued" : (configuredDeployResult.success ? "submitted" : "failed"));
-      const workflowConclusion = configuredDeployResult.deploymentRunConclusion ||
-        (configuredDeployResult.deploymentRunFound ? "pending" : (configuredDeployResult.success ? "submitted" : "failure"));
-
-      setDeployResultSummary({
-        success: configuredDeployResult.success,
-        title: resultTitle,
-        status: workflowStatus,
-        conclusion: workflowConclusion,
-        runUrl: configuredDeployResult.deploymentRunUrl || "N/A",
-        logsUrl: configuredDeployResult.deploymentRunLogsUrl || "N/A",
-        deployedUrl,
-        previewReady: Boolean(configuredDeployResult.deploymentPreviewReady),
-        logs: formatDeploymentLogs(configuredDeployResult.deploymentLogsSnippet),
-      });
-
-      setShowDeployResultModal(true);
-
-      if (configuredDeployResult.success) {
-        setShowDeployConfigModal(false);
+      if (!deployPath) {
+        alert("Please choose a valid folder inside the currently opened project.");
+        return;
       }
+
+      const result = await window.electronAPI.deployProject(folderPath, {
+        projectType: deployProjectType,
+        deploySubPath: deploySubPath,
+        packageManager: deployPackageManager,
+      });
+
+      if (result.success) {
+        alert(`Deployment started successfully!\nURL: ${result.url || "URL not returned"}\nProject ID: ${result.projectId || "N/A"}`);
+        setShowDeployConfigModal(false);
+      } else {
+        alert("Deployment failed: " + (result.error || "Unknown error"));
+      }
+    } catch (error) {
+      alert("Error during deployment: " + (error instanceof Error ? error.message : "Unknown error"));
     } finally {
       setIsSubmittingDeployConfig(false);
     }
@@ -360,7 +393,7 @@ const HomePage: React.FC = () => {
       if (newSet.has(path)) {
         newSet.delete(path);
       } else {
-        newSet.add(path);
+        newSet.add(path); 
       }
       return newSet;
     });
@@ -1170,49 +1203,14 @@ const handleRunFile = async (filePath: string | null) => {
               <Play size={16} />
             </button>
            <button className="cursor-pointer hover:bg-white/25 rounded-sm transition-all duration-150 px-3 py-2 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed" disabled={!folderPath}
-              onClick={async () => {
- // you can store this globally when folder opened
+              onClick={() => {
                 if (!folderPath) {
                   alert("Please open a project first!");
                   return;
-                } 
-                const result = await window.electronAPI.deployProject(folderPath);
-                if (result.success) alert(`Deployed! Visit: ${result.url}`);
-                else {
-                  if (result.canCreateRepo) {
-                    const shouldCreateRepo = window.confirm(
-                      "Current folder is not a git repo. Do you want to create a GitHub repo now?"
-                    );
-
-                    if (shouldCreateRepo) {
-                      if (!githubAccessToken) {
-                        alert("GitHub token is missing. Please login again with GitHub.");
-                        return;
-                      }
-
-                      const createRepoResult = await window.electronAPI.deployProject(folderPath, {
-                        createRepoIfMissing: true,
-                        githubAccessToken,
-                      });
-
-                      if (createRepoResult.success) {
-                        alert(`GitHub repo created and pushed successfully: ${createRepoResult.clone_url}`);
-                      } else {
-                        alert("Failed to create GitHub repo: " + createRepoResult.error);
-                      }
-                      return;
-                    }
-                  }
-
-                  if (result.canConfigureDeploy) {
-                    setDeploySubPath(".");
-                    setDeployProjectType("node");
-                    setShowDeployConfigModal(true);
-                    return;
-                  }
-
-                  alert("Deployment failed: " + result.error);
                 }
+                setDeploySubPath(".");
+                setDeployProjectType("node");
+                setShowDeployConfigModal(true);
               }} title="Deploy Project"
             >
               🚀
@@ -1486,33 +1484,83 @@ const handleRunFile = async (filePath: string | null) => {
 
       {showDeployConfigModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-lg border border-gray-700 bg-[#111] p-5 text-white">
+          <div className="w-full max-w-4xl rounded-lg border border-gray-700 bg-[#111] p-5 text-white">
             <h3 className="text-lg font-semibold">Configure Deployment</h3>
             <p className="mt-1 text-sm text-gray-300">
               Choose a folder path (relative to current root) and project type.
             </p>
 
             <div className="mt-4">
-              <label className="mb-1 block text-sm text-gray-300">Deploy Path</label>
-              <input
+              <label className="mb-1 block text-sm text-gray-300">Project Folder</label>
+              <select
                 value={deploySubPath}
                 onChange={(e) => setDeploySubPath(e.target.value)}
-                placeholder="."
                 className="w-full rounded-md border border-gray-600 bg-black px-3 py-2 text-sm outline-none focus:border-blue-500"
-              />
+              >
+                {deployFolderOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="mt-3">
-              <label className="mb-1 block text-sm text-gray-300">Project Type</label>
-              <select
-                value={deployProjectType}
-                onChange={(e) => setDeployProjectType(e.target.value as "node" | "react" | "next")}
-                className="w-full rounded-md border border-gray-600 bg-black px-3 py-2 text-sm outline-none focus:border-blue-500"
-              >
-                <option value="node">Node</option>
-                <option value="react">React</option>
-                <option value="next">Next</option>
-              </select>
+              <label className="mb-2 block text-sm text-gray-300">Project Type</label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {deploymentProjectTypeOptions.map((option) => {
+                  const Icon = option.icon;
+                  const isSelected = deployProjectType === option.value;
+
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setDeployProjectType(option.value)}
+                      className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-all ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-500/15 shadow-[0_0_0_1px_rgba(59,130,246,0.25)]"
+                          : "border-gray-700 bg-black/40 hover:border-gray-500 hover:bg-white/5"
+                      }`}
+                    >
+                      <Icon className="h-10 w-10 shrink-0" />
+                      <div>
+                        <div className="text-sm font-semibold text-white">{option.label}</div>
+                        <div className="text-xs text-gray-400">{option.description}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="mb-2 block text-sm text-gray-300">Package Manager</label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {deploymentPackageManagerOptions.map((option) => {
+                  const Icon = option.icon;
+                  const isSelected = deployPackageManager === option.value;
+
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setDeployPackageManager(option.value)}
+                      className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-all ${
+                        isSelected
+                          ? "border-emerald-500 bg-emerald-500/15 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
+                          : "border-gray-700 bg-black/40 hover:border-gray-500 hover:bg-white/5"
+                      }`}
+                    >
+                      <Icon className="h-10 w-10 shrink-0" />
+                      <div>
+                        <div className="text-sm font-semibold text-white">{option.label}</div>
+                        <div className="text-xs text-gray-400">{option.description}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="mt-5 flex justify-end gap-2">

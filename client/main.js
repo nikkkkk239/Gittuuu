@@ -22,6 +22,8 @@ const fsWatchers = new Map();
 const fsWatcherDebounceTimers = new Map();
 let mainWindow = null;
 
+const DEPLOY_API_URL = "http://54.80.159.176:5000/deploy";
+
 
 
 function isGitRepository(projectPath) {
@@ -635,210 +637,101 @@ async function createCloudflareTunnel(tunnelName) {
   };
 }
 
+function createProjectZip(projectPath) {
+  return new Promise((resolve, reject) => {
+    const projectName = path.basename(projectPath);
+    const zipFileName = `${projectName}-${Date.now()}.zip`;
+    const zipPath = path.join(app.getPath("temp"), zipFileName);
+
+    const output = fs.createWriteStream(zipPath);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    output.on("close", () => resolve(zipPath));
+    output.on("error", (error) => reject(error));
+    archive.on("error", (error) => reject(error));
+
+    archive.pipe(output);
+    archive.directory(projectPath, false);
+    archive.finalize();
+  });
+}
+
 
 ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) => {
+  let zipPath = "";
+
   try {
-    const {
-      createRepoIfMissing = false,
-      githubAccessToken = "",
-      configureExistingRepo = false,
-      deploySubPath = ".",
-      projectType = "node"
-    } = deploymentOptions;
-
-    if (!isGitRepository(projectPath)) {
-      if (createRepoIfMissing) {
-        if (!githubAccessToken) {
-          return {
-            success: false,
-            error: "GitHub session token missing. Please login again.",
-            canCreateRepo: true
-          };
-        }
-
-        const repoName = path.basename(projectPath);
-        const createRepoResponse = await axios.post(
-          "https://api.github.com/user/repos",
-          {
-            name: repoName,
-            private: false
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${githubAccessToken}`,
-              Accept: "application/vnd.github+json",
-              "X-GitHub-Api-Version": "2022-11-28"
-            }
-          }
-        );
-
-        const cloneUrl = createRepoResponse.data?.clone_url;
-        if (!cloneUrl) {
-          return {
-            success: false,
-            error: "GitHub repo created but clone_url was not returned.",
-            canCreateRepo: true
-          };
-        }
-
-        const git = simpleGit(projectPath);
-        await git.init();
-
-        const remotes = await git.getRemotes(true);
-        const hasOrigin = remotes.some((remote) => remote.name === "origin");
-        if (hasOrigin) {
-          await git.removeRemote("origin");
-        }
-
-        await git.addRemote("origin", cloneUrl);
-        await git.add(".");
-
-        const status = await git.status();
-        if (status.files.length > 0) {
-          await git.commit("Initial commit");
-        }
-
-        await git.raw(["branch", "-M", "main"]);
-        await git.push("origin", "main");
-
-        return {
-          success: true,
-          createdRepo: true,
-          clone_url: cloneUrl
-        };
-      }
-
+    if (!projectPath || !fs.existsSync(projectPath) || !fs.statSync(projectPath).isDirectory()) {
       return {
         success: false,
-        error: "Current folder is not a git repo. Please initialize one before deploying.",
-        canCreateRepo: true
+        error: "Invalid project folder. Please enter a valid project path."
       };
     }
 
-    if (!configureExistingRepo) {
+    const deploySubPath = String(deploymentOptions?.deploySubPath || ".").trim() || ".";
+    const projectRoot = path.resolve(projectPath);
+    const resolvedDeployPath = path.resolve(projectRoot, deploySubPath);
+    const pathBoundary = `${projectRoot}${path.sep}`;
+
+    if (resolvedDeployPath !== projectRoot && !resolvedDeployPath.startsWith(pathBoundary)) {
       return {
         success: false,
-        canConfigureDeploy: true,
-        error: "Repository found. Please choose deploy path and project type."
-      };
-    }
-
-    const normalizedProjectType = String(projectType).toLowerCase();
-    const allowedProjectTypes = new Set(["node", "react", "next"]);
-
-    if (!allowedProjectTypes.has(normalizedProjectType)) {
-      return {
-        success: false,
-        error: "Invalid project type. Choose Node, React, or Next."
-      };
-    }
-
-    const rootPath = path.resolve(projectPath);
-    const normalizedInputSubPath = normalizeDeploySubPath(deploySubPath);
-    const resolvedDeployPath = path.resolve(rootPath, normalizedInputSubPath);
-    const normalizedWorkflowPath = normalizedInputSubPath === "." ? "." : normalizedInputSubPath.replace(/\\/g, "/");
-
-    if (resolvedDeployPath !== rootPath && !resolvedDeployPath.startsWith(`${rootPath}${path.sep}`)) {
-      return {
-        success: false,
-        error: "Deploy path must be inside the current opened folder."
+        error: "Invalid deploy path. Please choose a folder inside the opened project."
       };
     }
 
     if (!fs.existsSync(resolvedDeployPath) || !fs.statSync(resolvedDeployPath).isDirectory()) {
       return {
         success: false,
-        error: "Deploy path does not exist or is not a folder."
+        error: "Selected deploy folder does not exist or is not a directory."
       };
     }
 
-    const lockFileInfo = getLockFileInfoForSubPath(rootPath, normalizedWorkflowPath);
-    if (!lockFileInfo.exists) {
-      return {
-        success: false,
-        error: `No lock file found in deploy path '${normalizedWorkflowPath}'. Expected one of: ${lockFileInfo.acceptedRelativePaths.join(", ")}`
-      };
-    }
+    console.log("Starting deployment for path:", resolvedDeployPath, "root:", projectRoot, "subPath:", deploySubPath);
+    
+    zipPath = await createProjectZip(resolvedDeployPath);
 
-    const jobName = getWorkflowJobName(normalizedInputSubPath);
-    const workflowsDir = path.join(rootPath, ".github", "workflows");
-    fs.mkdirSync(workflowsDir, { recursive: true });
+    const projectType = String(deploymentOptions?.projectType || "").toLowerCase();
+    const packageManager = String(deploymentOptions?.packageManager || "npm").toLowerCase();
+    const form = new FormData();
+    form.append("project", fs.createReadStream(zipPath), {
+      filename: `${path.basename(resolvedDeployPath)}.zip`,
+      contentType: "application/zip"
+    });
+    form.append("projectType", projectType);
+    form.append("packageManager", packageManager);
 
-    const workflowFilePath = path.join(workflowsDir, "deploy.yml");
+    console.log("Uploading ZIP to EC2 API:", DEPLOY_API_URL, "with projectType:", projectType, "packageManager:", packageManager);
+    
+    const response = await axios.post(DEPLOY_API_URL, form, {
+      headers: form.getHeaders(),
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
+    });
 
-    const workflowPathFilter = normalizedWorkflowPath === "." ? "**" : `${normalizedWorkflowPath}/**`;
-    const jobBlock = buildWorkflowJob(
-      jobName,
-      normalizedWorkflowPath,
-      normalizedProjectType,
-      lockFileInfo.lockFileRelativePath
-    );
-    const existingWorkflowContent = fs.existsSync(workflowFilePath)
-      ? fs.readFileSync(workflowFilePath, "utf-8")
-      : "";
-    const workflowContent = updateWorkflowContent(existingWorkflowContent, workflowPathFilter, jobBlock);
-
-    fs.writeFileSync(workflowFilePath, workflowContent.trimEnd() + "\n", "utf-8");
-
-    const commitResult = await commitWorkflowWithGit(rootPath, workflowFilePath);
-
-    if (!commitResult.success) {
-      return {
-        success: false,
-        error: commitResult.error,
-        workflowPath: workflowFilePath,
-        configuredDeploy: true,
-        deployPath: resolvedDeployPath,
-        projectType: normalizedProjectType
-      };
-    }
-
-    let runSummary = {
-      runFound: false,
-      runId: null,
-      runStatus: null,
-      runConclusion: null,
-      runUrl: null,
-      logsUrl: null,
-      tryCloudflareUrl: null,
-      logsSnippet: "",
-      previewReady: false
-    };
-
-    try {
-      runSummary = await getLatestDeploymentRunSummary(rootPath, githubAccessToken, commitResult.commitHash);
-    } catch (runError) {
-      runSummary.logsSnippet = `Unable to fetch run summary: ${runError.message || "Unknown error"}`;
-    }
+    console.log("Deployment response received:", response.data);
 
     return {
       success: true,
-      configuredDeploy: true,
-      deployPath: resolvedDeployPath,
-      projectType: normalizedProjectType,
-      workflowPath: workflowFilePath,
-      commitHash: commitResult.commitHash,
-      commitBranch: commitResult.branch,
-      commitSkipped: commitResult.skipped,
-      commitMessage: commitResult.message,
-      deploymentRunFound: runSummary.runFound,
-      deploymentRunId: runSummary.runId,
-      deploymentRunStatus: runSummary.runStatus,
-      deploymentRunConclusion: runSummary.runConclusion,
-      deploymentRunUrl: runSummary.runUrl,
-      deploymentRunLogsUrl: runSummary.logsUrl,
-      deploymentTryCloudflareUrl: runSummary.tryCloudflareUrl,
-      deploymentResolvedUrl: runSummary.deploymentUrl,
-      deploymentPreviewReady: runSummary.previewReady,
-      deploymentLogsSnippet: runSummary.logsSnippet
+      url: response.data?.url,
+      projectId: response.data?.projectId,
+      response: response.data
     };
   } catch (error) {
-    console.error("Error deploying project:", error);
+    console.error("Deploy upload failed:", error.message);
     return {
       success: false,
-      error: error.message,
-      details: error.response?.data
+      error: error.response?.data?.error || error.message || "Failed to upload project for deployment."
     };
+  } finally {
+    if (zipPath && fs.existsSync(zipPath)) {
+      try {
+        fs.unlinkSync(zipPath);
+        console.log("Cleaned up temp ZIP file:", zipPath);
+      } catch (cleanupError) {
+        console.error("Failed to remove temp deploy zip:", cleanupError);
+      }
+    }
   }
 });
 

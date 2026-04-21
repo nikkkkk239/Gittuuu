@@ -34,10 +34,12 @@ declare global {
           configureExistingRepo?: boolean;
           deploySubPath?: string;
           projectType?: "node" | "react" | "next";
+          packageManager?: "npm" | "yarn" | "pnpm";
         }
       ) => Promise<{
         success: boolean;
         url?: string;
+        projectId?: string;
         error?: string;
         canCreateRepo?: boolean;
         createdRepo?: boolean;
