@@ -9,6 +9,47 @@ This guide helps you run the deployment backend and Electron client locally.
 - Docker installed and running
 - (Optional) Firebase project variables for auth/history
 
+## AWS EC2 Setup (Deployment Server)
+
+1. Log in to AWS Console and open your EC2 instance details.
+2. Click Connect and copy the SSH command shown by AWS.
+3. Download your .pem key file.
+4. Move the key into your Downloads folder (if needed):
+
+```bash
+mv /path/to/your-key.pem ~/Downloads/
+```
+
+5. Fix key permissions:
+
+```bash
+chmod 400 ~/Downloads/your-key.pem
+```
+
+6. Run the SSH connect command (example):
+
+```bash
+ssh -i ~/Downloads/your-key.pem ubuntu@<your-ec2-public-ip>
+```
+
+7. Move into your deployment server folder:
+
+```bash
+cd deploy-server
+```
+
+8. Start the server:
+
+```bash
+node server.js
+```
+
+If your backend file is named deployment_server.js in this repo, use:
+
+```bash
+node deployment_server.js
+```
+
 ## 1) Start Deployment Backend
 
 From project root:
