@@ -1,5 +1,6 @@
 
 import { initializeApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
 import { getAuth, GithubAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 
 const firebaseConfig = {
@@ -11,7 +12,8 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const db = getFirestore(app);
 const provider = new GithubAuthProvider();
 provider.addScope("repo");
 
-export { auth, provider, signInWithPopup, onAuthStateChanged, signOut ,getAuth};
+export { auth, db, provider, signInWithPopup, onAuthStateChanged, signOut ,getAuth};

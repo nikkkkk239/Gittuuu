@@ -1,63 +1,71 @@
-# 🚀 Quick Deployment Reference
+# Quick Start
 
-## Setup (One-time)
+This guide helps you run the deployment backend and Electron client locally.
+
+## Prerequisites
+
+- Node.js 20+
+- npm (or yarn/pnpm)
+- Docker installed and running
+- (Optional) Firebase project variables for auth/history
+
+## 1) Start Deployment Backend
+
+From project root:
+
 ```bash
-# 1. Install dependencies
-cd server && npm install
+node deployment_server.js
+```
 
-# 2. Get API tokens
-Vercel: https://vercel.com/account/tokens
-Railway: https://railway.app/account/tokens
+Backend defaults:
+- API port: 5000
+- Deployment base directory: /home/ubuntu/projects
 
-# 3. Add to server/.env
-VERCEL_TOKEN=your_token
-RAILWAY_TOKEN=your_token
+If running locally on macOS, ensure this directory exists and is writable, or update BASE_PROJECT_DIR in deployment_server.js.
 
-# 4. Install Railway CLI
-npm i -g @railway/cli
+## 2) Start IDE Client
 
-# 5. Start server
+In a second terminal:
+
+```bash
+cd client
+npm install
 npm start
 ```
 
-## Deploy Frontend (Vercel)
-- **Supported**: React, Vite, Next.js
-- **Platform**: Vercel
-- **Result**: Live URL in ~2 minutes
-- **Cost**: FREE
+## 3) Deploy a Project
 
-## Deploy Backend (Railway)
-- **Supported**: Node.js, Express, any Docker app
-- **Platform**: Railway
-- **Result**: Live URL + Docker deployment
-- **Cost**: FREE ($5 credit/month)
+1. Open deployment modal in the IDE.
+2. Select Create New Deployment.
+3. Choose project type: node, react, react-vite, or next.
+4. Choose package manager: npm, yarn, or pnpm.
+5. Upload project zip.
+6. Wait for deployment success response.
 
-## Docker Commands
+## 4) View Logs and Manage Deployment
+
+- Open logs view to monitor build/runtime output.
+- Use actions from deployment cards:
+  - Start
+  - Stop
+  - Delete
+
+## 5) Verify Backend Health
+
 ```bash
-# Build
-docker build -t myapp .
-
-# Run frontend
-docker run -p 8080:80 myapp
-
-# Run backend
-docker run -p 3000:3000 myapp
-
-# View logs
-docker logs <container-id>
+curl http://localhost:5000/health
 ```
 
-## AWS Migration (Future)
-1. Same Dockerfile works!
-2. Push to AWS ECR
-3. Deploy to ECS/EC2/App Runner
-4. No code changes needed
-
 ## Troubleshooting
-- Server not running? `cd server && npm start`
-- Docker error? Make sure Docker Desktop is open
-- Token error? Check `.env` file
-- Port in use? Change PORT in `.env`
 
----
-**Full Guide**: See DEPLOYMENT_GUIDE.md
+## Docker build fails
+- Open build logs from the logs endpoint/UI.
+- Verify package.json scripts (build/start) for selected project type.
+
+## Stop/start says project not found
+- Ensure backend is running updated code.
+- Confirm projectId exists under /home/ubuntu/projects.
+
+## Client cannot talk to backend
+- Check API URL used by Electron main process.
+- Ensure port 5000 is reachable from client runtime.

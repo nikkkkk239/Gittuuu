@@ -23,6 +23,7 @@ import DrawPanel from "../components/DrawPanel";
 import FlowVisualizationModal from "../components/FlowVisualizationModal";
 import { NodeLogo, NextLogo, NpmLogo, PnpmLogo, ReactLogo, YarnLogo } from "../components/DeploymentBrandIcons";
 import { CodeFlowAnalyzer, CodeFlowGraph } from "../lib/codeFlowAnalyzer";
+import { deleteUserDeployment, getRecentUserDeployments, saveUserDeployment } from "../lib/deploymentHistory";
 
 interface FileItem {
   name: string;
@@ -60,10 +61,12 @@ const HomePage: React.FC = () => {
 
 
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const { logout, githubAccessToken } = useAuth();
+  const { logout, githubAccessToken, user } = useAuth();
   const [isSideBarOpen , setIsSideBarOpen] = useState(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [showFlowModal, setShowFlowModal] = useState(false);
+  const [showDeployActionModal, setShowDeployActionModal] = useState(false);
+  const [showDeploymentsModal, setShowDeploymentsModal] = useState(false);
   const [showDeployConfigModal, setShowDeployConfigModal] = useState(false);
   const [deploySubPath, setDeploySubPath] = useState(".");
   const [deployProjectType, setDeployProjectType] = useState<"node" | "react" | "react-vite" | "next">("node");
@@ -82,6 +85,18 @@ const HomePage: React.FC = () => {
     logs: string;
     lastUpdatedAt: string;
   } | null>(null);
+  const [recentDeployments, setRecentDeployments] = useState<
+    Array<{
+      projectId: string;
+      projectType: string;
+      packageManager: string;
+      status: string;
+      updatedAt: string;
+      url?: string;
+        logsUrl?: string;
+    }>
+  >([]);
+  const [deploymentActionLoading, setDeploymentActionLoading] = useState<Record<string, boolean>>({});
   const deployLogsPollingRef = React.useRef<number | null>(null);
   const analyzerRef = React.useRef(new CodeFlowAnalyzer());
 
@@ -379,11 +394,77 @@ const HomePage: React.FC = () => {
     };
   };
 
+  const refreshRecentDeployments = async () => {
+    if (!user?.uid) {
+      setRecentDeployments([]);
+      return;
+    }
+
+    try {
+      const rows = await getRecentUserDeployments(user.uid, 10);
+      setRecentDeployments(
+        rows.map((row) => ({
+          projectId: row.projectId,
+          projectType: row.projectType,
+          packageManager: row.packageManager,
+          status: row.status,
+          url: row.url,
+            logsUrl: row.logsUrl,
+          updatedAt: row.updatedAt || new Date().toISOString(),
+        }))
+      );
+    } catch (error) {
+      console.error("Failed to load recent deployments:", error);
+    }
+  };
+
+  const runDeploymentAction = async (action: "start" | "stop" | "delete", item: { projectId: string; projectType: string; packageManager: string; logsUrl?: string; url?: string }) => {
+    const key = `${action}:${item.projectId}`;
+    setDeploymentActionLoading((prev) => ({ ...prev, [key]: true }));
+
+    try {
+      const result = await window.electronAPI.deployAction(action, item.projectId);
+      if (!result.success) {
+        alert(`Failed to ${action} deployment: ${result.error || "Unknown error"}`);
+        return;
+      }
+
+      if (user?.uid) {
+        if (action === "delete") {
+          await deleteUserDeployment(user.uid, item.projectId);
+        } else {
+          await saveUserDeployment(user.uid, {
+            projectId: item.projectId,
+            projectType: item.projectType,
+            packageManager: item.packageManager,
+            status: action === "start" ? "running" : "stopped",
+            url: result.url || item.url,
+            logsUrl: result.logsUrl || item.logsUrl,
+          });
+        }
+      }
+
+      await refreshRecentDeployments();
+    } catch (error) {
+      alert(`Failed to ${action} deployment: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setDeploymentActionLoading((prev) => {
+        const updated = { ...prev };
+        delete updated[key];
+        return updated;
+      });
+    }
+  };
+
   useEffect(() => {
     return () => {
       stopDeployLogsPolling();
     };
   }, []);
+
+  useEffect(() => {
+    void refreshRecentDeployments();
+  }, [user?.uid]);
 
   const handleDeployConfigurationSubmit = async () => {
     if (!folderPath) {
@@ -408,6 +489,18 @@ const HomePage: React.FC = () => {
 
       if (result.success) {
         const logsUrl = String(result.logsUrl || "");
+
+        if (user?.uid && result.projectId) {
+          await saveUserDeployment(user.uid, {
+            projectId: result.projectId,
+            projectType: deployProjectType,
+            packageManager: deployPackageManager,
+            status: "running",
+            url: result.url,
+            logsUrl,
+          });
+          await refreshRecentDeployments();
+        }
 
         setDeployResultSummary({
           success: true,
@@ -476,6 +569,18 @@ const HomePage: React.FC = () => {
         setShowDeployConfigModal(false);
       } else {
         stopDeployLogsPolling();
+        if (user?.uid && result.projectId) {
+          await saveUserDeployment(user.uid, {
+            projectId: result.projectId,
+            projectType: deployProjectType,
+            packageManager: deployPackageManager,
+            status: "failed",
+            url: result.url,
+            logsUrl: result.logsUrl,
+            error: result.error,
+          });
+          await refreshRecentDeployments();
+        }
         if (result.projectId && result.logsUrl) {
           setDeployResultSummary({
             success: false,
@@ -1322,9 +1427,7 @@ const handleRunFile = async (filePath: string | null) => {
                   alert("Please open a project first!");
                   return;
                 }
-                setDeploySubPath(".");
-                setDeployProjectType("node");
-                setShowDeployConfigModal(true);
+                setShowDeployActionModal(true);
               }} title="Deploy Project"
             >
               🚀
@@ -1596,6 +1699,180 @@ const handleRunFile = async (filePath: string | null) => {
         folderPath={folderPath}
       />
 
+      {showDeployActionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-lg border border-gray-700 bg-[#111] p-5 text-white">
+            <h3 className="text-lg font-semibold">Deploy Project</h3>
+            <p className="mt-1 text-sm text-gray-300">Choose what you want to do.</p>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeploySubPath(".");
+                  setDeployProjectType("node");
+                  setShowDeployActionModal(false);
+                  setShowDeployConfigModal(true);
+                }}
+                className="rounded-lg border border-blue-500 bg-blue-500/10 p-4 text-left hover:bg-blue-500/20"
+              >
+                <p className="text-sm font-semibold">Create New Deployment</p>
+                <p className="mt-1 text-xs text-gray-300">Configure folder, type and package manager.</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  void refreshRecentDeployments();
+                  setShowDeployActionModal(false);
+                  setShowDeploymentsModal(true);
+                }}
+                className="rounded-lg border border-emerald-500 bg-emerald-500/10 p-4 text-left hover:bg-emerald-500/20"
+              >
+                <p className="text-sm font-semibold">View Deployments</p>
+                <p className="mt-1 text-xs text-gray-300">See all stored deployments with status and links.</p>
+              </button>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setShowDeployActionModal(false)}
+                className="rounded-md border border-gray-500 px-3 py-2 text-sm hover:bg-gray-800"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeploymentsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-6xl rounded-2xl border border-slate-700 bg-gradient-to-b from-slate-900 to-black p-5 text-white shadow-[0_10px_50px_rgba(0,0,0,0.55)]">
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-semibold tracking-tight">All Deployed Projects</h3>
+                <p className="mt-1 text-sm text-slate-300">
+                  Live previews, status, and quick links for your deployment history.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowDeploymentsModal(false)}
+                className="rounded-lg border border-slate-600 px-3 py-2 text-sm hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            {recentDeployments.length === 0 ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-10 text-center">
+                <p className="text-sm text-slate-300">No deployment history found for this user yet.</p>
+              </div>
+            ) : (
+              <div className="grid max-h-[68vh] grid-cols-1 gap-4 overflow-y-auto pr-1 md:grid-cols-2">
+                {recentDeployments.map((item) => (
+                  <div key={item.projectId} className="rounded-xl border border-slate-700 bg-slate-900/60 p-3">
+                    <div className="relative overflow-hidden rounded-lg border border-slate-700 bg-slate-950">
+                      {item.url ? (
+                        <iframe
+                          title={`Preview ${item.projectId}`}
+                          src={item.url}
+                          loading="lazy"
+                          className="h-44 w-full bg-white"
+                          referrerPolicy="no-referrer"
+                          sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                        />
+                      ) : (
+                        <div className="flex h-44 w-full items-center justify-center text-xs text-slate-400">
+                          No preview URL available.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-slate-100">{item.projectId}</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {item.projectType} | {item.packageManager} | Updated {new Date(item.updatedAt).toLocaleString()}
+                        </p>
+                      </div>
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${
+                          item.status === "running"
+                            ? "border-emerald-500 text-emerald-300"
+                            : item.status === "failed"
+                              ? "border-red-500 text-red-300"
+                              : "border-slate-500 text-slate-300"
+                        }`}
+                      >
+                        {item.status}
+                      </span>
+                    </div>
+
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      If preview is blank, that site may block iframe embedding.
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {(() => {
+                        const normalizedStatus = String(item.status || "").toLowerCase();
+                        const isActive = normalizedStatus === "running" || normalizedStatus === "success";
+
+                        return (
+                          <>
+                      {item.url ? (
+                        <button
+                          onClick={() => window.electronAPI.openExternal(item.url || "")}
+                          className="rounded-md border border-blue-500/70 bg-blue-500/10 px-2.5 py-1 text-xs text-blue-200 hover:bg-blue-500/20"
+                        >
+                          Open App
+                        </button>
+                      ) : null}
+                      {item.logsUrl ? (
+                        <button
+                          onClick={() => window.electronAPI.openExternal(item.logsUrl || "")}
+                          className="rounded-md border border-emerald-500/70 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:bg-emerald-500/20"
+                        >
+                          Open Logs
+                        </button>
+                      ) : null}
+                      {!isActive ? (
+                      <button
+                        onClick={() => void runDeploymentAction("start", item)}
+                        disabled={Boolean(deploymentActionLoading[`start:${item.projectId}`])}
+                        className="rounded-md border border-cyan-500/70 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {deploymentActionLoading[`start:${item.projectId}`] ? "Starting..." : "Start"}
+                      </button>
+                      ) : null}
+                      {isActive ? (
+                      <button
+                        onClick={() => void runDeploymentAction("stop", item)}
+                        disabled={Boolean(deploymentActionLoading[`stop:${item.projectId}`])}
+                        className="rounded-md border border-amber-500/70 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {deploymentActionLoading[`stop:${item.projectId}`] ? "Stopping..." : "Stop"}
+                      </button>
+                      ) : null}
+                      <button
+                        onClick={() => void runDeploymentAction("delete", item)}
+                        disabled={Boolean(deploymentActionLoading[`delete:${item.projectId}`])}
+                        className="rounded-md border border-red-500/70 bg-red-500/10 px-2.5 py-1 text-xs text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {deploymentActionLoading[`delete:${item.projectId}`] ? "Deleting..." : "Delete"}
+                      </button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {showDeployConfigModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-4xl rounded-lg border border-gray-700 bg-[#111] p-5 text-white">
@@ -1693,6 +1970,7 @@ const handleRunFile = async (filePath: string | null) => {
                 {isSubmittingDeployConfig ? "Deploying..." : " Continue"}
               </button>
             </div>
+
           </div>
         </div>
       )}
@@ -1736,7 +2014,7 @@ const handleRunFile = async (filePath: string | null) => {
             </div>
 
             <div className="mt-4">
-              <p className="mb-2 text-sm text-gray-300">Logs (formatted)</p>
+              <p className="mb-2 text-sm text-gray-300">Logs</p>
               <p className="mb-2 text-xs text-gray-400">Last updated: {deployResultSummary.lastUpdatedAt}</p>
               <pre className="max-h-72 overflow-y-auto rounded-md border border-gray-700 bg-black/70 p-3 text-xs leading-relaxed text-gray-200 whitespace-pre-wrap">
                 {deployResultSummary.logs}

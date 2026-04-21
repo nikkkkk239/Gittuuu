@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { upsertUserProfile } from '../lib/deploymentHistory';
 import {
   auth,
   provider,
@@ -37,6 +38,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     onAuthStateChanged(auth, (user) => {
       setUser(user);
       setLoading(false)
+
+      if (user) {
+        upsertUserProfile(user).catch((error) => {
+          console.error("Failed to upsert user profile in Firestore:", error);
+        });
+      }
 
     });
   }, []);

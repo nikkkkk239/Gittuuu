@@ -38,6 +38,20 @@ function allocatePort() {
   return port;
 }
 
+function getRequestOrigin(req) {
+  const host = String(req.headers["x-forwarded-host"] || req.get("host") || req.hostname || "localhost").split(":")[0];
+  const protocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http");
+  return {
+    host,
+    protocol,
+  };
+}
+
+function getLogsUrl(req, projectId) {
+  const { host, protocol } = getRequestOrigin(req);
+  return `${protocol}://${host}:${PORT}/logs/${projectId}`;
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
@@ -48,6 +62,56 @@ function getImageName(projectId) {
 
 function getContainerName(projectId) {
   return `deployment-${projectId}`;
+}
+
+async function getOrRebuildArtifact(projectId) {
+  const existing = deploymentArtifacts.get(projectId);
+  if (existing) {
+    return existing;
+  }
+
+  const projectPath = path.join(BASE_PROJECT_DIR, projectId);
+  if (!(await fs.pathExists(projectPath))) {
+    return null;
+  }
+
+  const artifact = {
+    projectId,
+    projectPath,
+    projectType: "unknown",
+    packageManager: "npm",
+    stdoutPath: path.join(projectPath, "deploy.stdout.log"),
+    stderrPath: path.join(projectPath, "deploy.stderr.log"),
+    buildLogPath: path.join(projectPath, "deploy.build.log"),
+    imageName: getImageName(projectId),
+    containerName: getContainerName(projectId),
+    status: "unknown",
+    updatedAt: new Date().toISOString(),
+  };
+
+  const packageJson = await readPackageJson(projectPath);
+  if (packageJson) {
+    if (packageJson.dependencies?.next || packageJson.devDependencies?.next) {
+      artifact.projectType = "next";
+    } else if (packageJson.dependencies?.vite || packageJson.devDependencies?.vite) {
+      artifact.projectType = "react-vite";
+    } else if (packageJson.dependencies?.react || packageJson.devDependencies?.react) {
+      artifact.projectType = "react";
+    } else {
+      artifact.projectType = "node";
+    }
+
+    if (await fs.pathExists(path.join(projectPath, "pnpm-lock.yaml"))) {
+      artifact.packageManager = "pnpm";
+    } else if (await fs.pathExists(path.join(projectPath, "yarn.lock"))) {
+      artifact.packageManager = "yarn";
+    } else {
+      artifact.packageManager = "npm";
+    }
+  }
+
+  deploymentArtifacts.set(projectId, artifact);
+  return artifact;
 }
 
 function getInstallCommand(packageManager, projectType) {
@@ -427,10 +491,9 @@ app.post("/deploy", upload.single("project"), async (req, res) => {
     await unzipProject(req.file.path, projectPath);
     const processInfo = await runDockerDeployment(projectId, projectPath, projectType, packageManager, port);
 
-    const host = String(req.headers["x-forwarded-host"] || req.get("host") || req.hostname || "localhost").split(":")[0];
-    const protocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http");
+    const { host, protocol } = getRequestOrigin(req);
     const deployedUrl = `${protocol}://${host}:${port}`;
-    const logsUrl = `${protocol}://${host}:${PORT}/logs/${projectId}`;
+    const logsUrl = getLogsUrl(req, projectId);
 
     log("Deployment completed", {
       requestId,
@@ -479,9 +542,7 @@ app.post("/deploy", upload.single("project"), async (req, res) => {
       updatedAt: new Date().toISOString(),
     });
 
-    const host = String(req.headers["x-forwarded-host"] || req.get("host") || req.hostname || "localhost").split(":")[0];
-    const protocol = String(req.headers["x-forwarded-proto"] || req.protocol || "http");
-    const logsUrl = `${protocol}://${host}:${PORT}/logs/${projectId}`;
+    const logsUrl = getLogsUrl(req, projectId);
 
     return res.status(500).json({
       success: false,
@@ -522,7 +583,7 @@ app.get("/logs/:projectId", async (req, res) => {
   const { projectId } = req.params;
   const maxLines = Math.min(Math.max(Number(req.query?.tail || 200), 1), 2000);
   const project = runningProjects.get(projectId);
-  const artifact = deploymentArtifacts.get(projectId);
+  const artifact = deploymentArtifacts.get(projectId) || (await getOrRebuildArtifact(projectId));
 
   if (!project && !artifact) {
     return res.status(404).json({ success: false, error: "Project not found." });
@@ -564,22 +625,26 @@ app.get("/logs/:projectId", async (req, res) => {
 app.post("/stop/:projectId", async (req, res) => {
   const { projectId } = req.params;
   const project = runningProjects.get(projectId);
+  const artifact = deploymentArtifacts.get(projectId) || (await getOrRebuildArtifact(projectId));
 
-  if (!project) {
+  if (!project && !artifact) {
     return res.status(404).json({ success: false, error: "Project not found." });
   }
 
+  const targetProject = project || artifact;
+  const logsUrl = getLogsUrl(req, projectId);
+
   try {
-    await execAsync(`docker stop ${project.containerName} >/dev/null 2>&1 || true`, {
+    await execAsync(`docker stop ${targetProject.containerName} >/dev/null 2>&1 || true`, {
       maxBuffer: MAX_COMMAND_BUFFER,
     });
-    await execAsync(`docker rm ${project.containerName} >/dev/null 2>&1 || true`, {
+    await execAsync(`docker rm ${targetProject.containerName} >/dev/null 2>&1 || true`, {
       maxBuffer: MAX_COMMAND_BUFFER,
     });
 
-    if (project.logCapturePid) {
+    if (targetProject.logCapturePid) {
       try {
-        process.kill(project.logCapturePid, "SIGTERM");
+        process.kill(targetProject.logCapturePid, "SIGTERM");
       } catch (_error) {
         // Best effort cleanup for detached docker logs process.
       }
@@ -587,13 +652,26 @@ app.post("/stop/:projectId", async (req, res) => {
 
     runningProjects.delete(projectId);
 
-    log("Stopped project", {
+    deploymentArtifacts.set(projectId, {
+      ...(deploymentArtifacts.get(projectId) || {}),
       projectId,
-      containerId: project.containerId,
-      containerName: project.containerName,
+      status: "stopped",
+      updatedAt: new Date().toISOString(),
+      logCapturePid: null,
     });
 
-    return res.json({ success: true, projectId });
+    log("Stopped project", {
+      projectId,
+      containerId: targetProject.containerId,
+      containerName: targetProject.containerName,
+    });
+
+    return res.json({
+      success: true,
+      projectId,
+      status: "stopped",
+      logsUrl,
+    });
   } catch (error) {
     log("Failed to stop project", {
       projectId,
@@ -604,6 +682,192 @@ app.post("/stop/:projectId", async (req, res) => {
       success: false,
       projectId,
       error: error.message || "Failed to stop project",
+    });
+  }
+});
+
+app.post("/start/:projectId", async (req, res) => {
+  const { projectId } = req.params;
+  const artifact = deploymentArtifacts.get(projectId) || (await getOrRebuildArtifact(projectId));
+
+  if (!artifact) {
+    return res.status(404).json({ success: false, error: "Project not found." });
+  }
+
+  if (runningProjects.has(projectId)) {
+    return res.json({
+      success: true,
+      projectId,
+      status: "running",
+      logsUrl: getLogsUrl(req, projectId),
+      url: (() => {
+        const running = runningProjects.get(projectId);
+        if (!running?.port) {
+          return null;
+        }
+        const { host, protocol } = getRequestOrigin(req);
+        return `${protocol}://${host}:${running.port}`;
+      })(),
+    });
+  }
+
+  const imageName = artifact.imageName || getImageName(projectId);
+  const containerName = artifact.containerName || getContainerName(projectId);
+  const projectPath = artifact.projectPath || path.join(BASE_PROJECT_DIR, projectId);
+  const stdoutPath = artifact.stdoutPath || path.join(projectPath, "deploy.stdout.log");
+  const stderrPath = artifact.stderrPath || path.join(projectPath, "deploy.stderr.log");
+  const buildLogPath = artifact.buildLogPath || path.join(projectPath, "deploy.build.log");
+  const port = Number(artifact.port || allocatePort());
+
+  try {
+    await fs.ensureFile(stdoutPath);
+    await fs.ensureFile(stderrPath);
+    await fs.ensureFile(buildLogPath);
+
+    await execAsync(`docker rm -f ${containerName} >/dev/null 2>&1 || true`, {
+      maxBuffer: MAX_COMMAND_BUFFER,
+    });
+
+    const { stdout } = await execAsync(
+      `docker run -d --name ${containerName} --restart unless-stopped -p ${port}:${CONTAINER_PORT} ${imageName}`,
+      { maxBuffer: MAX_COMMAND_BUFFER }
+    );
+
+    const containerId = String(stdout || "").trim();
+    const logCapturePid = startContainerLogCapture(containerName, stdoutPath, stderrPath);
+
+    runningProjects.set(projectId, {
+      containerId,
+      containerName,
+      imageName,
+      projectPath,
+      projectType: artifact.projectType,
+      packageManager: artifact.packageManager,
+      port,
+      startedAt: new Date().toISOString(),
+      stdoutPath,
+      stderrPath,
+      buildLogPath,
+      logCapturePid,
+    });
+
+    deploymentArtifacts.set(projectId, {
+      ...artifact,
+      imageName,
+      containerName,
+      containerId,
+      projectPath,
+      stdoutPath,
+      stderrPath,
+      buildLogPath,
+      port,
+      status: "running",
+      updatedAt: new Date().toISOString(),
+      logCapturePid,
+    });
+
+    const { host, protocol } = getRequestOrigin(req);
+    const deployedUrl = `${protocol}://${host}:${port}`;
+
+    log("Started project", {
+      projectId,
+      containerId,
+      containerName,
+      imageName,
+      port,
+    });
+
+    return res.json({
+      success: true,
+      projectId,
+      status: "running",
+      url: deployedUrl,
+      logsUrl: getLogsUrl(req, projectId),
+    });
+  } catch (error) {
+    deploymentArtifacts.set(projectId, {
+      ...artifact,
+      status: "failed",
+      error: error.message,
+      updatedAt: new Date().toISOString(),
+    });
+
+    log("Failed to start project", {
+      projectId,
+      error: error.message,
+    });
+
+    return res.status(500).json({
+      success: false,
+      projectId,
+      error: error.message || "Failed to start project",
+      logsUrl: getLogsUrl(req, projectId),
+    });
+  }
+});
+
+app.delete("/deployments/:projectId", async (req, res) => {
+  const { projectId } = req.params;
+  const running = runningProjects.get(projectId);
+  const artifact = deploymentArtifacts.get(projectId) || (await getOrRebuildArtifact(projectId));
+
+  if (!running && !artifact) {
+    return res.status(404).json({ success: false, error: "Project not found." });
+  }
+
+  const target = running || artifact;
+  const containerName = target.containerName || getContainerName(projectId);
+  const imageName = target.imageName || getImageName(projectId);
+  const projectPath = target.projectPath || path.join(BASE_PROJECT_DIR, projectId);
+
+  try {
+    await execAsync(`docker stop ${containerName} >/dev/null 2>&1 || true`, {
+      maxBuffer: MAX_COMMAND_BUFFER,
+    });
+    await execAsync(`docker rm ${containerName} >/dev/null 2>&1 || true`, {
+      maxBuffer: MAX_COMMAND_BUFFER,
+    });
+    await execAsync(`docker rmi ${imageName} >/dev/null 2>&1 || true`, {
+      maxBuffer: MAX_COMMAND_BUFFER,
+    });
+
+    if (target.logCapturePid) {
+      try {
+        process.kill(target.logCapturePid, "SIGTERM");
+      } catch (_error) {
+        // Best effort cleanup for detached docker logs process.
+      }
+    }
+
+    if (await fs.pathExists(projectPath)) {
+      await fs.remove(projectPath);
+    }
+
+    runningProjects.delete(projectId);
+    deploymentArtifacts.delete(projectId);
+
+    log("Deleted deployment", {
+      projectId,
+      containerName,
+      imageName,
+      projectPath,
+    });
+
+    return res.json({
+      success: true,
+      projectId,
+      status: "deleted",
+    });
+  } catch (error) {
+    log("Failed to delete deployment", {
+      projectId,
+      error: error.message,
+    });
+
+    return res.status(500).json({
+      success: false,
+      projectId,
+      error: error.message || "Failed to delete deployment",
     });
   }
 });

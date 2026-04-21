@@ -1,458 +1,62 @@
-# 🏗️ Architecture Diagram
+# Architecture
 
-## System Overview
+This project is an Electron + React IDE client with a Node.js deployment backend that builds and runs uploaded projects in Docker containers.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     YOUR ELECTRON APP (Gittuuu)                 │
-│                                                                 │
-│  ┌──────────────┐        ┌──────────────┐                      │
-│  │   Select     │   →    │   Validate   │                      │
-│  │   Project    │        │   Project    │                      │
-│  └──────────────┘        └──────────────┘                      │
-│         │                        │                              │
-│         ▼                        ▼                              │
-│  ┌──────────────┐        ┌──────────────┐                      │
-│  │    Build     │   →    │     Zip      │                      │
-│  │   Project    │        │   Project    │                      │
-│  └──────────────┘        └──────────────┘                      │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │
-                              │ HTTP POST
-                              │ (multipart/form-data)
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              DEPLOYMENT SERVER (Express on :3000)               │
-│                                                                 │
-│  ┌──────────────┐        ┌──────────────┐                      │
-│  │   Receive    │   →    │   Extract    │                      │
-│  │   ZIP File   │        │    Files     │                      │
-│  └──────────────┘        └──────────────┘                      │
-│         │                        │                              │
-│         ▼                        ▼                              │
-│  ┌──────────────────────────────────────┐                      │
-│  │      Route by Project Type           │                      │
-│  │  • Frontend → Vercel                 │                      │
-│  │  • Backend  → Railway                │                      │
-│  │  • Test     → Local                  │                      │
-│  └──────────────────────────────────────┘                      │
-│         │                │                │                     │
-└─────────┼────────────────┼────────────────┼─────────────────────┘
-          │                │                │
-          │                │                │
-┌─────────▼──────┐  ┌──────▼─────┐  ┌──────▼──────┐
-│                │  │            │  │             │
-│  VERCEL API    │  │  RAILWAY   │  │  LOCAL      │
-│  (Frontend)    │  │  (Backend) │  │  (Testing)  │
-│                │  │            │  │             │
-└────────┬───────┘  └─────┬──────┘  └──────┬──────┘
-         │                │                 │
-         │                │                 │
-         ▼                ▼                 ▼
-┌────────────────┐ ┌─────────────┐  ┌──────────────┐
-│   Vercel CDN   │ │  Railway    │  │  localhost   │
-│   *.vercel.app │ │  *.railway  │  │  :3000       │
-└────────────────┘ └─────────────┘  └──────────────┘
-         │                │                 │
-         │                │                 │
-         ▼                ▼                 ▼
-   ┌──────────────────────────────────────────┐
-   │         🌍 LIVE ON THE INTERNET          │
-   │     Users can access your deployed apps  │
-   └──────────────────────────────────────────┘
-```
+## High-Level Components
 
----
+1. Desktop Client (Electron)
+- Main process: handles IPC and forwards deployment requests to backend APIs.
+- Preload bridge: exposes safe APIs to renderer.
+- Renderer (React): shows deployment UI, logs, and deployment controls.
 
-## Deployment Flow - Frontend (React/Vite)
+2. Deployment Backend (Node.js + Express)
+- Entry point: deployment_server.js.
+- Accepts zip uploads and deployment metadata.
+- Dynamically generates a Dockerfile per deployment.
+- Builds Docker image and runs container on allocated host port.
+- Persists build/runtime logs on server filesystem.
+- Exposes lifecycle APIs: deploy, logs, start, stop, delete.
 
-```
-┌──────────────┐
-│   User       │
-│   Opens      │
-│   React App  │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Gittuuu    │
-│   Detects:   │
-│   - React    │
-│   - Vite     │
-│   Category:  │
-│   Frontend   │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   npm        │
-│   install    │
-│   npm build  │
-│   → dist/    │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Create     │
-│   ZIP file   │
-│   project.   │
-│   zip        │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   POST to    │
-│   Server     │
-│   :3000      │
-│   /deploy    │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Server     │
-│   Extracts   │
-│   Files      │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Calls      │
-│   Vercel API │
-│   with files │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Vercel     │
-│   Builds &   │
-│   Deploys    │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Returns    │
-│   Live URL   │
-│   https://   │
-│   app.vercel │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   User gets  │
-│   URL in     │
-│   Gittuuu    │
-│   ✅ DONE    │
-└──────────────┘
-```
+3. Persistence and History
+- Runtime state cache in memory (maps for running projects and deployment artifacts).
+- Deployment project artifacts/logs on disk under /home/ubuntu/projects/{projectId}.
+- Client-side deployment history can be saved in Firestore per authenticated user.
 
-**Time:** ~2-5 minutes  
-**Cost:** FREE
+## Request/Deploy Flow
 
----
+1. User selects project + deployment options in the IDE.
+2. Renderer calls preload API.
+3. Electron main process forwards request to deployment backend.
+4. Backend unzips project, validates project type/scripts.
+5. Backend writes Dockerfile.deploy dynamically.
+6. Backend builds Docker image and stores build logs.
+7. Backend starts container and begins docker logs capture.
+8. Backend returns deployment URL and logs URL.
+9. IDE polls logs endpoint for build/runtime visibility.
 
-## Deployment Flow - Backend (Node.js)
+## Logging Model
 
-```
-┌──────────────┐
-│   User       │
-│   Opens      │
-│   Node App   │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Gittuuu    │
-│   Detects:   │
-│   - Express  │
-│   - Node.js  │
-│   Category:  │
-│   Backend    │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Create     │
-│   ZIP file   │
-│   (no build) │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   POST to    │
-│   Server     │
-│   :3000      │
-│   /deploy    │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Server     │
-│   Extracts   │
-│   Files      │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Copies     │
-│   Dockerfile │
-│   .nodejs    │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Creates    │
-│   railway.   │
-│   json       │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Returns    │
-│   CLI        │
-│   Commands   │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   User runs: │
-│   railway    │
-│   login      │
-│   railway up │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Railway    │
-│   Builds     │
-│   Docker     │
-│   Image      │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Deploys    │
-│   Container  │
-│   to Cloud   │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Returns    │
-│   Live URL   │
-│   https://   │
-│   .railway   │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   API Live   │
-│   ✅ DONE    │
-└──────────────┘
-```
+Per deployment, backend stores:
+- deploy.build.log (image build output)
+- deploy.stdout.log (container stdout)
+- deploy.stderr.log (container stderr)
 
-**Time:** ~3-7 minutes  
-**Cost:** FREE ($5 credit)
+These logs remain on the EC2 host and are streamed to UI via GET /logs/:projectId.
 
----
+## Key Backend Endpoints
 
-## Docker Build Process
+- POST /deploy
+- GET /logs/:projectId
+- POST /start/:projectId
+- POST /stop/:projectId
+- DELETE /deployments/:projectId
+- GET /projects
+- GET /health
 
-```
-┌─────────────────────────────────────────┐
-│      Dockerfile (Multi-stage)           │
-└─────────────────────────────────────────┘
+## Deployment Isolation
 
-Stage 1: BUILDER
-┌─────────────────────────────────────────┐
-│  FROM node:18-alpine AS builder         │
-│                                         │
-│  WORKDIR /app                           │
-│  COPY package*.json ./                  │
-│  RUN npm ci                             │
-│  COPY . .                               │
-│  RUN npm run build                      │
-│  → Creates /app/dist or /app/build      │
-└─────────────────┬───────────────────────┘
-                  │
-                  │ Only build artifacts
-                  │ copied to next stage
-                  ▼
-Stage 2: PRODUCTION (Frontend)
-┌─────────────────────────────────────────┐
-│  FROM nginx:alpine                      │
-│                                         │
-│  COPY --from=builder /app/dist /usr/.. │
-│  COPY nginx.conf /etc/nginx/...        │
-│  EXPOSE 80                              │
-│  CMD ["nginx", "-g", "daemon off;"]    │
-└─────────────────┬───────────────────────┘
-                  │
-                  ▼
-         ┌────────────────┐
-         │  Final Image   │
-         │  Size: ~50MB   │
-         │  (vs 500MB+)   │
-         └────────────────┘
+- Image name: deployment-image-{projectId}
+- Container name: deployment-{projectId}
+- Dedicated host port per deployment
 
-Benefits:
-✅ Small image size (only production files)
-✅ No source code in production image
-✅ Fast deployment
-✅ Security best practices
-✅ Works on AWS/GCP/Azure
-```
-
----
-
-## File Structure After Deployment
-
-```
-server/
-├── deployed/              ← Local deployments
-│   └── 1731600000000/     ← Timestamp folder
-│       └── (project files)
-├── temp/                  ← Temporary extraction
-│   └── (auto-cleaned)
-├── templates/             ← Docker & config templates
-│   ├── Dockerfile.react
-│   ├── Dockerfile.vite
-│   ├── Dockerfile.nextjs
-│   ├── Dockerfile.nodejs
-│   ├── nginx.conf
-│   ├── .dockerignore
-│   ├── vercel.json
-│   └── railway.json
-├── uploads/               ← Uploaded ZIP files
-│   └── (auto-cleaned)
-├── .env                   ← Your API tokens
-├── index.js               ← Server code
-└── package.json
-```
-
----
-
-## Network Flow
-
-```
-Internet
-   │
-   ▼
-┌──────────────────────────────────────┐
-│          User's Browser              │
-└──────────────────────────────────────┘
-   │                          │
-   │ Frontend                 │ API Requests
-   ▼                          ▼
-┌─────────────┐        ┌──────────────┐
-│   Vercel    │        │   Railway    │
-│   CDN       │        │   Container  │
-│             │        │              │
-│  React App  │   →    │  Express API │
-│  (Static)   │        │  (Dynamic)   │
-└─────────────┘        └──────────────┘
-                              │
-                              ▼
-                       ┌──────────────┐
-                       │   Database   │
-                       │  (Optional)  │
-                       └──────────────┘
-```
-
----
-
-## Technology Stack
-
-```
-┌─────────────────────────────────────────────┐
-│              Frontend Layer                 │
-├─────────────────────────────────────────────┤
-│  • React / Vite / Next.js                   │
-│  • Deployed to: Vercel                      │
-│  • Served via: CDN                          │
-│  • SSL: Automatic                           │
-└─────────────────────────────────────────────┘
-                    │
-                    │ API Calls
-                    ▼
-┌─────────────────────────────────────────────┐
-│              Backend Layer                  │
-├─────────────────────────────────────────────┤
-│  • Node.js / Express                        │
-│  • Containerized: Docker                    │
-│  • Deployed to: Railway                     │
-│  • Process Manager: PM2 (optional)          │
-└─────────────────────────────────────────────┘
-                    │
-                    │ Queries
-                    ▼
-┌─────────────────────────────────────────────┐
-│              Database Layer                 │
-├─────────────────────────────────────────────┤
-│  • PostgreSQL (Railway)                     │
-│  • MongoDB (Atlas)                          │
-│  • Redis (Upstash)                          │
-└─────────────────────────────────────────────┘
-```
-
----
-
-## Deployment Comparison
-
-```
-┌────────────┬──────────┬──────────┬──────────┐
-│  Feature   │  Local   │  Vercel  │ Railway  │
-├────────────┼──────────┼──────────┼──────────┤
-│  Access    │  Local   │  Global  │  Global  │
-│  Speed     │  Instant │  2-5 min │  3-7 min │
-│  SSL       │  No      │  Yes     │  Yes     │
-│  CDN       │  No      │  Yes     │  No      │
-│  Docker    │  No      │  No      │  Yes     │
-│  Cost      │  Free    │  Free    │  Free    │
-│  Use Case  │  Testing │ Frontend │ Backend  │
-└────────────┴──────────┴──────────┴──────────┘
-```
-
----
-
-## AWS Migration Path
-
-```
-Current Setup              AWS Equivalent
-──────────────            ────────────────
-
-Vercel (Frontend)    →    S3 + CloudFront
-                          or Amplify Hosting
-
-Railway (Backend)    →    ECS/Fargate
-                          with same Dockerfile
-
-Deployment Server    →    CodePipeline
-                          or GitHub Actions
-
-Docker Images        →    ECR (Elastic Container Registry)
-
-Environment Vars     →    Systems Manager
-                          Parameter Store
-
-Database             →    RDS (PostgreSQL)
-                          or DynamoDB
-```
-
-**Migration Steps:**
-1. Push Docker images to ECR
-2. Create ECS task definitions
-3. Deploy to Fargate/EC2
-4. Setup ALB (Application Load Balancer)
-5. Configure CloudFront for frontend
-6. Done! Same app, AWS infrastructure
-
----
-
-This architecture gives you:
-✅ Professional deployment pipeline
-✅ Free hosting to start
-✅ Easy AWS migration when ready
-✅ Industry-standard practices
-✅ Scalable infrastructure
-
-Happy deploying! 🚀
+This naming keeps each deployment isolated and traceable by projectId.

@@ -23,6 +23,7 @@ const fsWatcherDebounceTimers = new Map();
 let mainWindow = null;
 
 const DEPLOY_API_URL = "http://54.80.159.176:5000/deploy";
+const DEPLOY_API_BASE_URL = DEPLOY_API_URL.replace(/\/deploy\/?$/, "");
 
 
 
@@ -770,6 +771,56 @@ ipcMain.handle("deploy:getLogs", async (_, logsUrl, tail = 200) => {
       logsUrl: error.response?.data?.logsUrl,
       buildLogPath: error.response?.data?.logs?.build || error.response?.data?.buildLogPath,
       error: error.response?.data?.error || error.message || "Failed to fetch deployment logs."
+    };
+  }
+});
+
+ipcMain.handle("deploy:action", async (_, action, projectId) => {
+  try {
+    const sanitizedAction = String(action || "").trim().toLowerCase();
+    const sanitizedProjectId = String(projectId || "").trim();
+
+    if (!sanitizedProjectId) {
+      return {
+        success: false,
+        error: "Missing project ID."
+      };
+    }
+
+    if (!["start", "stop", "delete"].includes(sanitizedAction)) {
+      return {
+        success: false,
+        error: "Invalid action. Allowed values: start, stop, delete."
+      };
+    }
+
+    const endpointPath =
+      sanitizedAction === "delete"
+        ? `/deployments/${sanitizedProjectId}`
+        : `/${sanitizedAction}/${sanitizedProjectId}`;
+
+    const method = sanitizedAction === "delete" ? "delete" : "post";
+    const response = await axios({
+      method,
+      url: `${DEPLOY_API_BASE_URL}${endpointPath}`,
+      timeout: 15000,
+    });
+
+    return {
+      success: true,
+      projectId: sanitizedProjectId,
+      action: sanitizedAction,
+      status: response.data?.status || (sanitizedAction === "delete" ? "deleted" : sanitizedAction),
+      url: response.data?.url,
+      logsUrl: response.data?.logsUrl,
+      response: response.data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      projectId,
+      action,
+      error: error.response?.data?.error || error.message || "Deployment action failed.",
     };
   }
 });

@@ -26,6 +26,18 @@ declare global {
       watchDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
       stopWatching: (dirPath: string) => Promise<{ success: boolean }>;
       onDirectoryChanged: (callback: (dirPath: string) => void) => () => void;
+      deployAction: (
+        action: "start" | "stop" | "delete",
+        projectId: string
+      ) => Promise<{
+        success: boolean;
+        projectId?: string;
+        action?: string;
+        status?: string;
+        url?: string;
+        logsUrl?: string;
+        error?: string;
+      }>;
       deployGetLogs: (
         logsUrl: string,
         tail?: number

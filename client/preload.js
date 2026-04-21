@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   deployProject: (projectPath, deploymentOptions = {}) => ipcRenderer.invoke("deploy:project", projectPath, deploymentOptions),
   deployGetLogs: (logsUrl, tail = 200) => ipcRenderer.invoke("deploy:getLogs", logsUrl, tail),
+  deployAction: (action, projectId) => ipcRenderer.invoke("deploy:action", action, projectId),
   
   // Terminal APIs
   terminal: {
