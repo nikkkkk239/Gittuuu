@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeAllListeners("fs:directory-changed");
   },
   deployProject: (projectPath, deploymentOptions = {}) => ipcRenderer.invoke("deploy:project", projectPath, deploymentOptions),
+  deployGetLogs: (logsUrl, tail = 200) => ipcRenderer.invoke("deploy:getLogs", logsUrl, tail),
   
   // Terminal APIs
   terminal: {

@@ -715,6 +715,7 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
       success: true,
       url: response.data?.url,
       projectId: response.data?.projectId,
+      logsUrl: response.data?.logsUrl,
       response: response.data
     };
   } catch (error) {
@@ -732,6 +733,44 @@ ipcMain.handle("deploy:project", async (_, projectPath, deploymentOptions = {}) 
         console.error("Failed to remove temp deploy zip:", cleanupError);
       }
     }
+  }
+});
+
+ipcMain.handle("deploy:getLogs", async (_, logsUrl, tail = 200) => {
+  try {
+    const sanitizedUrl = String(logsUrl || "").trim();
+    const sanitizedTail = Math.min(Math.max(Number(tail || 200), 1), 2000);
+
+    if (!sanitizedUrl) {
+      return {
+        success: false,
+        error: "Missing logs URL."
+      };
+    }
+
+    const response = await axios.get(sanitizedUrl, {
+      params: { tail: sanitizedTail },
+      timeout: 10000
+    });
+
+    return {
+      success: true,
+      projectId: response.data?.projectId,
+      containerId: response.data?.containerId,
+      containerName: response.data?.containerName,
+      stdout: response.data?.stdout || "",
+      stderr: response.data?.stderr || "",
+      build: response.data?.build || "",
+      logPaths: response.data?.logPaths || null
+    };
+  } catch (error) {
+    return {
+      success: false,
+      projectId: error.response?.data?.projectId,
+      logsUrl: error.response?.data?.logsUrl,
+      buildLogPath: error.response?.data?.logs?.build || error.response?.data?.buildLogPath,
+      error: error.response?.data?.error || error.message || "Failed to fetch deployment logs."
+    };
   }
 });
 

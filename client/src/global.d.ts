@@ -26,6 +26,21 @@ declare global {
       watchDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
       stopWatching: (dirPath: string) => Promise<{ success: boolean }>;
       onDirectoryChanged: (callback: (dirPath: string) => void) => () => void;
+      deployGetLogs: (
+        logsUrl: string,
+        tail?: number
+      ) => Promise<{
+        success: boolean;
+        projectId?: string;
+        containerId?: string;
+        containerName?: string;
+        stdout?: string;
+        stderr?: string;
+          build?: string;
+        error?: string;
+          logsUrl?: string;
+          buildLogPath?: string;
+      }>;
       deployProject: (
         projectPath: string,
         deploymentOptions?: {
@@ -33,13 +48,19 @@ declare global {
           githubAccessToken?: string;
           configureExistingRepo?: boolean;
           deploySubPath?: string;
-          projectType?: "node" | "react" | "next";
+          projectType?: "node" | "react" | "react-vite" | "next";
           packageManager?: "npm" | "yarn" | "pnpm";
         }
       ) => Promise<{
         success: boolean;
         url?: string;
         projectId?: string;
+        logsUrl?: string;
+        logs?: {
+          stdout?: string;
+          stderr?: string;
+          build?: string;
+        };
         error?: string;
         canCreateRepo?: boolean;
         createdRepo?: boolean;

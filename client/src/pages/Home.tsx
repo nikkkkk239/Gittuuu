@@ -66,7 +66,7 @@ const HomePage: React.FC = () => {
   const [showFlowModal, setShowFlowModal] = useState(false);
   const [showDeployConfigModal, setShowDeployConfigModal] = useState(false);
   const [deploySubPath, setDeploySubPath] = useState(".");
-  const [deployProjectType, setDeployProjectType] = useState<"node" | "react" | "next">("node");
+  const [deployProjectType, setDeployProjectType] = useState<"node" | "react" | "react-vite" | "next">("node");
   const [deployPackageManager, setDeployPackageManager] = useState<"npm" | "yarn" | "pnpm">("npm");
   const [isSubmittingDeployConfig, setIsSubmittingDeployConfig] = useState(false);
   const [showDeployResultModal, setShowDeployResultModal] = useState(false);
@@ -80,7 +80,9 @@ const HomePage: React.FC = () => {
     deployedUrl: string;
     previewReady: boolean;
     logs: string;
+    lastUpdatedAt: string;
   } | null>(null);
+  const deployLogsPollingRef = React.useRef<number | null>(null);
   const analyzerRef = React.useRef(new CodeFlowAnalyzer());
 
   const [showInput, setShowInput] = useState(false);
@@ -95,7 +97,8 @@ const HomePage: React.FC = () => {
 
   const deploymentProjectTypeOptions = [
     { value: "node", label: "Node", description: "Backend / server app", icon: NodeLogo },
-    { value: "react", label: "React", description: "Frontend app", icon: ReactLogo },
+    { value: "react", label: "React (CRA)", description: "Create React App", icon: ReactLogo },
+    { value: "react-vite", label: "React (Vite)", description: "Vite-powered React app", icon: ReactLogo },
     { value: "next", label: "Next", description: "Full-stack app", icon: NextLogo },
   ] as const;
 
@@ -353,6 +356,35 @@ const HomePage: React.FC = () => {
       .join("\n");
   };
 
+  const stopDeployLogsPolling = () => {
+    if (deployLogsPollingRef.current !== null) {
+      window.clearInterval(deployLogsPollingRef.current);
+      deployLogsPollingRef.current = null;
+    }
+  };
+
+  const fetchDeploymentLogs = async (logsUrl: string) => {
+    const logsResult = await window.electronAPI.deployGetLogs(logsUrl, 300);
+    if (!logsResult.success) {
+      throw new Error(logsResult.error || "Failed to fetch deployment logs.");
+    }
+
+    const combinedLogs = [logsResult.build || "", logsResult.stdout || "", logsResult.stderr || ""]
+      .filter((chunk) => chunk.trim().length > 0)
+      .join("\n");
+
+    return {
+      formattedLogs: formatDeploymentLogs(combinedLogs),
+      hasLogs: combinedLogs.trim().length > 0,
+    };
+  };
+
+  useEffect(() => {
+    return () => {
+      stopDeployLogsPolling();
+    };
+  }, []);
+
   const handleDeployConfigurationSubmit = async () => {
     if (!folderPath) {
       alert("Please open a project first!");
@@ -375,12 +407,94 @@ const HomePage: React.FC = () => {
       });
 
       if (result.success) {
-        alert(`Deployment started successfully!\nURL: ${result.url || "URL not returned"}\nProject ID: ${result.projectId || "N/A"}`);
+        const logsUrl = String(result.logsUrl || "");
+
+        setDeployResultSummary({
+          success: true,
+          title: `Project ${result.projectId || "unknown"} deployed successfully`,
+          status: "running",
+          conclusion: "success",
+          runUrl: result.projectId || "N/A",
+          logsUrl: logsUrl || "Logs URL not available",
+          deployedUrl: result.url || "URL not returned",
+          previewReady: true,
+          logs: "Fetching latest logs...",
+          lastUpdatedAt: new Date().toLocaleTimeString(),
+        });
+        setShowDeployResultModal(true);
+
+        stopDeployLogsPolling();
+
+        if (logsUrl) {
+          const pullLogs = async () => {
+            try {
+              const { formattedLogs, hasLogs } = await fetchDeploymentLogs(logsUrl);
+              setDeployResultSummary((prev) => {
+                if (!prev) {
+                  return prev;
+                }
+
+                return {
+                  ...prev,
+                  logs: hasLogs ? formattedLogs : "Container is running. Waiting for first log lines...",
+                  lastUpdatedAt: new Date().toLocaleTimeString(),
+                };
+              });
+            } catch (logsError) {
+              setDeployResultSummary((prev) => {
+                if (!prev) {
+                  return prev;
+                }
+
+                return {
+                  ...prev,
+                  logs: `Unable to fetch logs: ${logsError instanceof Error ? logsError.message : "Unknown error"}`,
+                  lastUpdatedAt: new Date().toLocaleTimeString(),
+                };
+              });
+            }
+          };
+
+          await pullLogs();
+          deployLogsPollingRef.current = window.setInterval(() => {
+            void pullLogs();
+          }, 2000);
+        } else {
+          setDeployResultSummary((prev) => {
+            if (!prev) {
+              return prev;
+            }
+
+            return {
+              ...prev,
+              logs: "Deployment succeeded, but logs URL is missing in response.",
+              lastUpdatedAt: new Date().toLocaleTimeString(),
+            };
+          });
+        }
+
         setShowDeployConfigModal(false);
       } else {
+        stopDeployLogsPolling();
+        if (result.projectId && result.logsUrl) {
+          setDeployResultSummary({
+            success: false,
+            title: `Project ${result.projectId} deployment failed`,
+            status: "failed",
+            conclusion: "failure",
+            runUrl: result.projectId,
+            logsUrl: result.logsUrl,
+            deployedUrl: result.url || "URL not available",
+            previewReady: false,
+            logs: result.logs?.build || result.error || "Deployment failed.",
+            lastUpdatedAt: new Date().toLocaleTimeString(),
+          });
+          setShowDeployResultModal(true);
+        }
         alert("Deployment failed: " + (result.error || "Unknown error"));
       }
     } catch (error) {
+      stopDeployLogsPolling();
       alert("Error during deployment: " + (error instanceof Error ? error.message : "Unknown error"));
     } finally {
       setIsSubmittingDeployConfig(false);
@@ -1623,6 +1737,7 @@ const handleRunFile = async (filePath: string | null) => {
 
             <div className="mt-4">
               <p className="mb-2 text-sm text-gray-300">Logs (formatted)</p>
+              <p className="mb-2 text-xs text-gray-400">Last updated: {deployResultSummary.lastUpdatedAt}</p>
               <pre className="max-h-72 overflow-y-auto rounded-md border border-gray-700 bg-black/70 p-3 text-xs leading-relaxed text-gray-200 whitespace-pre-wrap">
                 {deployResultSummary.logs}
               </pre>
@@ -1630,7 +1745,10 @@ const handleRunFile = async (filePath: string | null) => {
 
             <div className="mt-5 flex justify-end">
               <button
-                onClick={() => setShowDeployResultModal(false)}
+                onClick={() => {
+                  stopDeployLogsPolling();
+                  setShowDeployResultModal(false);
+                }}
                 className="rounded-md border border-gray-500 px-4 py-2 text-sm hover:bg-gray-800"
               >
                 Close
